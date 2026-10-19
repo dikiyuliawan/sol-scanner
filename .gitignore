@@ -1,0 +1,21 @@
+# Dependensi
+node_modules/
+
+# Database lokal (watchlist & histori). Data hanya milik pengguna.
+data/
+
+# Artefak uji/manual
+*.tmp
+*.tmp.json
+*.tmp.log
+jobid.tmp
+discover.tmp.json
+discover2.tmp.json
+live*.tmp.json
+job*.tmp.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

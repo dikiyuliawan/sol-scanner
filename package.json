@@ -1,0 +1,13 @@
+{
+  "name": "solana-paper-scanner",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Local read-only Solana token discovery and ranking scanner; no wallet, no private key, no transactions",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test",
+    "backtest": "node backtest.mjs"
+  }
+}

@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22.x]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pakai Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      # Tidak ada dependensi npm: proyek ini sengaja tanpa node_modules.
+      - name: Jalankan test
+        run: npm test
+      - name: Pastikan server dapat dimuat tanpa jaringan
+        run: node --input-type=module -e "import('./server.mjs').then(m => { if (typeof m.createServer !== 'function') process.exit(1); });"
