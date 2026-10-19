@@ -22,18 +22,27 @@ function goPlusPercent(value) {
 export function normalizeGoPlus(raw, fetchedAt) {
   if (!raw || typeof raw !== 'object') return null;
   const holders = Array.isArray(raw.holders) ? raw.holders : [];
-  const top10 = holders.slice(0, 10).reduce((sum, holder) => sum + (goPlusPercent(holder?.percent) ?? 0), 0);
+  const top10 = holders
+    .map(holder => goPlusPercent(holder?.percent))
+    .filter(percent => percent !== null && percent >= 0)
+    .sort((a, b) => b - a)
+    .slice(0, 10)
+    .reduce((sum, percent) => sum + percent, 0);
   const lp = Array.isArray(raw.lp_holders) ? raw.lp_holders : [];
   const lpLocked = lp.reduce((sum, holder) => sum + (goPlusPercent(holder?.percent) ?? 0), 0);
+  const transferFee = raw.transfer_fee && typeof raw.transfer_fee === 'object'
+    ? (Object.keys(raw.transfer_fee).length ? raw.transfer_fee : false)
+    : null;
+  const transferHook = Array.isArray(raw.transfer_hook) ? (raw.transfer_hook.length ? raw.transfer_hook : false) : null;
   return {
     source: 'GoPlus',
     fetchedAt,
     mintable: status(raw.mintable),
     freezable: status(raw.freezable),
     nonTransferable: raw.non_transferable === '1' ? true : raw.non_transferable === '0' ? false : null,
-    transferFee: raw.transfer_fee && Object.keys(raw.transfer_fee).length ? raw.transfer_fee : null,
+    transferFee,
     transferFeeUpgradable: status(raw.transfer_fee_upgradable),
-    transferHook: Array.isArray(raw.transfer_hook) && raw.transfer_hook.length ? raw.transfer_hook : null,
+    transferHook,
     transferHookUpgradable: status(raw.transfer_hook_upgradable),
     metadataMutable: status(raw.metadata_mutable),
     holderCount: finiteOrNull(raw.holder_count),
@@ -76,7 +85,14 @@ export function createGoPlusSource({ fetcher = fetch, clock = Date.now } = {}) {
       if (!record) {
         return { status: 'unknown', source: 'GoPlus', fetchedAt, security: null, reason: 'GoPlus tidak mengembalikan record untuk mint ini. Ini bukan bukti aman.' };
       }
-      return { status: 'available', source: 'GoPlus', fetchedAt, cached, security: normalizeGoPlus(record, fetchedAt), reason: null };
+      const security = normalizeGoPlus(record, fetchedAt);
+      const complete = [security.mintable, security.freezable, security.nonTransferable, security.transferFee, security.transferHook]
+        .every(value => value !== null);
+      return {
+        status: complete ? 'available' : 'partial',
+        source: 'GoPlus', fetchedAt, cached, security,
+        reason: complete ? null : 'GoPlus mengembalikan record, tetapi sebagian kontrol kontrak tidak diketahui.'
+      };
     } catch (error) {
       return { status: 'unknown', source: 'GoPlus', fetchedAt, security: null, reason: errorReason(error, 'GoPlus: ') };
     }

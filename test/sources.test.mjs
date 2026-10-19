@@ -91,14 +91,17 @@ test('dex batch memecah daftar menjadi beberapa request 30 mint', async () => {
 });
 
 test('normalizeTrendingPool membaca hubungan token dan volume', () => {
+  const createdAt = '2024-01-01T00:00:00.000Z';
   const pool = normalizeTrendingPool({
-    attributes: { address: POOL, name: 'EX / SOL', reserve_in_usd: '250000', fdv_usd: '1000000', volume_usd: { h24: '50000' }, price_change_percentage: { h1: '2.5' } },
+    attributes: { address: POOL, name: 'EX / SOL', pool_created_at: createdAt, reserve_in_usd: '250000', fdv_usd: '1000000', volume_usd: { h24: '50000' }, price_change_percentage: { h1: '2.5' } },
     relationships: { base_token: { data: { id: `solana_${MINT}` } }, quote_token: { data: { id: 'solana_SOL' } } }
   }, 'now');
   assert.equal(pool.mint, MINT);
   assert.equal(pool.liquidityUsd, 250000);
   assert.equal(pool.volume.h24, 50000);
   assert.equal(pool.change.h1, 2.5);
+  assert.equal(pool.createdAt, Date.parse(createdAt));
+  assert.equal(pool.source, 'GeckoTerminal');
   assert.equal(normalizeTrendingPool({ attributes: {} }, 'now'), null);
 });
 
@@ -149,13 +152,20 @@ test('normalizeGoPlus menjumlahkan top10 dan mendeteksi transfer fee/hook', () =
   assert.equal(record.freezable, false);
   assert.equal(record.top10Pct, 20);
   assert.equal(record.lpHolderPct, 50);
-  assert.equal(record.transferFee, null);
-  assert.equal(record.transferHook, null);
+  assert.equal(record.transferFee, false);
+  assert.equal(record.transferHook, false);
   assert.equal(record.holderCount, 5000);
 });
 
+test('normalizeGoPlus menghitung sepuluh holder terbesar walau respons tidak terurut', () => {
+  const record = normalizeGoPlus({
+    holders: [...Array(10).fill({ percent: '0.01' }), { percent: '0.20' }, { percent: '0.20' }]
+  }, 'now');
+  assert.equal(record.top10Pct, 48);
+});
+
 test('goplus source memetakan record, unknown bila tidak ada, dan validasi mint', async () => {
-  const source = createGoPlusSource({ clock: () => 1_800_000_000_000, fetcher: async () => reply({ code: 1, result: { [MINT]: { mintable: { status: '0' }, freezable: { status: '0' }, holders: [], holder_count: '10' } } }) });
+  const source = createGoPlusSource({ clock: () => 1_800_000_000_000, fetcher: async () => reply({ code: 1, result: { [MINT]: { mintable: { status: '0' }, freezable: { status: '0' }, non_transferable: '0', transfer_fee: {}, transfer_hook: [], holders: [], holder_count: '10' } } }) });
   const result = await source.security(MINT);
   assert.equal(result.status, 'available');
   assert.equal(result.security.mintable, false);
@@ -169,6 +179,14 @@ test('goplus source memetakan record, unknown bila tidak ada, dan validasi mint'
   const invalid = createGoPlusSource({ fetcher: async () => { calls += 1; return reply({}); } });
   assert.equal((await invalid.security('bad')).status, 'unknown');
   assert.equal(calls, 0);
+});
+
+test('goplus marks a returned record with missing contract controls as partial', async () => {
+  const source = createGoPlusSource({ fetcher: async () => reply({ code: 1, result: { [MINT]: { mintable: { status: '0' }, freezable: { status: '0' } } } }) });
+  const result = await source.security(MINT);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.security.transferFee, null);
+  assert.equal(result.security.transferHook, null);
 });
 
 test('goplus source menangani timeout sebagai unknown tanpa melempar', async () => {

@@ -24,14 +24,15 @@ export function createJobs({ concurrency = 2, ttlMs = 10 * 60_000, clock = Date.
       running += 1;
       job.status = 'running';
       job.startedAt = new Date(clock()).toISOString();
+      const mint = typeof task.item === 'string' ? task.item : task.item?.mint;
       Promise.resolve()
         .then(() => task.worker(task.item))
         .then(result => {
-          job.results.push({ ok: true, mint: task.item.mint, result });
+          job.results.push({ ok: true, mint, result });
           job.completed += 1;
         })
         .catch(error => {
-          job.results.push({ ok: false, mint: task.item.mint, reason: error?.message ?? 'deep scan gagal' });
+          job.results.push({ ok: false, mint, reason: error?.message ?? 'deep scan gagal' });
           job.completed += 1;
           job.failures += 1;
         })

@@ -88,6 +88,22 @@ test('gates menolak mint authority aktif dan transfer fee', () => {
   assert.ok(fee.rejections.some(item => item.code === 'transfer_fee'));
 });
 
+test('GoPlus record parsial tidak mengubah kontrol kontrak unknown menjadi aman', () => {
+  const partial = { status: 'partial', security: { mintable: false, freezable: false, nonTransferable: null, transferFee: false, transferHook: false, top10Pct: 20, holderCount: 5000 } };
+  const permissive = evaluateGates(candidate({ safety: partial }), balanced);
+  assert.equal(permissive.passed, true);
+  assert.ok(permissive.warnings.some(item => item.code === 'safety_unknown'));
+  const partialScore = scoreCandidate(candidate({ safety: partial }), balanced);
+  assert.equal(partialScore.grade, 'C');
+  assert.ok(partialScore.penalties.some(item => item.code === 'safety_unknown'));
+
+  const strict = evaluateGates(candidate({ safety: partial }), { ...balanced, allowUnknownSafety: false });
+  assert.ok(strict.rejections.some(item => item.code === 'safety_unknown'));
+
+  const hazardousPartial = evaluateGates(candidate({ safety: { ...partial, security: { ...partial.security, mintable: true } } }), balanced);
+  assert.ok(hazardousPartial.rejections.some(item => item.code === 'mintable'));
+});
+
 test('gates menolak aset dasar, tag stable, dan konsentrasi holder tinggi', () => {
   const base = evaluateGates(candidate({ mint: [...EXCLUDED_MINTS][0] }), balanced);
   assert.ok(base.rejections.some(item => item.code === 'excluded_mint'));
@@ -139,7 +155,7 @@ test('scoreCandidate dengan struktur tersedia menaikkan kepercayaan ke 1', () =>
 });
 
 test('scoreCandidate memberi skor lebih tinggi saat safety tersedia', () => {
-  const withSafety = scoreCandidate(candidate({ safety: { status: 'available', security: { mintable: false, freezable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: null, transferHook: null, metadataMutable: false } } }), balanced);
+  const withSafety = scoreCandidate(candidate({ safety: { status: 'available', security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } } }), balanced);
   const without = scoreCandidate(candidate(), balanced);
   assert.ok(withSafety.score > without.score);
   assert.notEqual(withSafety.grade, 'C');

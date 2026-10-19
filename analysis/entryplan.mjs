@@ -100,7 +100,7 @@ export function buildEntryPlan(structure, {
     slippagePct,
     trend,
     rsi14,
-    pullbackDepthPct: Number(pullbackDepthPct.toFixed(1)),
+    pullbackDepthPct: pullbackDepthPct === null ? null : Number(pullbackDepthPct.toFixed(1)),
     extensionPct: Number(extensionPct.toFixed(2)),
     note: 'Rencana skenario dari candle 1 jam yang sudah tutup. Target adalah level/proyeksi measured-move, bukan janji. R:R tinggi tidak berarti peluang tinggi. Bukan perintah buy; invalidasi bukan stop-order otomatis.'
   };

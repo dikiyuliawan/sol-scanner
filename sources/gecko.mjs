@@ -14,12 +14,13 @@ export function normalizeTrendingPool(raw, fetchedAt) {
   const base = raw.relationships?.base_token?.data?.id;
   const quote = raw.relationships?.quote_token?.data?.id;
   const mint = typeof base === 'string' ? base.replace(/^solana_/, '') : null;
+  const createdAt = typeof attributes.pool_created_at === 'string' ? Date.parse(attributes.pool_created_at) : null;
   return {
     poolAddress: attributes.address,
     mint,
     quoteMint: typeof quote === 'string' ? quote.replace(/^solana_/, '') : null,
     name: typeof attributes.name === 'string' ? attributes.name : null,
-    createdAt: typeof attributes.pool_created_at === 'string' ? attributes.pool_created_at : null,
+    createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : null,
     liquidityUsd: finiteOrNull(attributes.reserve_in_usd),
     fdv: finiteOrNull(attributes.fdv_usd),
     marketCap: finiteOrNull(attributes.market_cap_usd),

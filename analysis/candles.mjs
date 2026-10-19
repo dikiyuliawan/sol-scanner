@@ -77,12 +77,12 @@ export function findPivots(candles, lookback = 3) {
  * ATR%, RSI, dan urutan higher-high/higher-low.
  */
 export function analyzeStructure(candles, { intervalSeconds = 3600 } = {}) {
-  if (!Array.isArray(candles) || candles.length < 30) {
-    return { status: 'unknown', reason: `Butuh minimal 30 candle; tersedia ${candles?.length ?? 0}.`, trend: null };
+  if (!Array.isArray(candles) || candles.length < 50) {
+    return { status: 'unknown', reason: `Butuh minimal 50 candle untuk EMA50; tersedia ${candles?.length ?? 0}.`, trend: null };
   }
   const closes = candles.map(candle => candle.close);
   const ema20 = ema(closes, 20);
-  const ema50 = ema(closes, Math.min(50, closes.length));
+  const ema50 = ema(closes, 50);
   const atr14 = atr(candles, 14);
   const rsi14 = rsi(candles, 14);
   const latest = candles.at(-1);

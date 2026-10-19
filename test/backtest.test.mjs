@@ -21,6 +21,15 @@ test('parseArgs memakai default dan menimpa horizon', () => {
   assert.equal(custom.input, 'x.json');
 });
 
+test('parseArgs mempertahankan beberapa horizon unik dan menolak parameter non-finite/tidak positif', () => {
+  const custom = parseArgs(['--horizon', '12', '--horizon', '24', '--horizon', '12']);
+  assert.deepEqual(custom.horizons, [12, 24]);
+  assert.throws(() => parseArgs(['--horizon', '0']), /angka positif/);
+  assert.throws(() => parseArgs(['--horizon', '-1']), /angka positif/);
+  assert.throws(() => parseArgs(['--horizon', 'Infinity']), /angka positif/);
+  assert.throws(() => parseArgs(['--min-return', 'NaN']), /angka finite/);
+});
+
 test('pairReturns memasangkan snapshot pertama dengan snapshot yang mencapai horizon', () => {
   const records = [
     { mint: 'A', takenAt: day(0), price: 1.0, score: 70, grade: 'B' },

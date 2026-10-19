@@ -67,14 +67,21 @@ export function evaluateGates(candidate, preset) {
   check(rejections, 'concentration_high', top10 !== null && top10 <= preset.maxTop10Pct,
     `Top 10 holder ${top10 === null ? 'unknown' : `${top10.toFixed(1)}%`} melewati ambang ${preset.maxTop10Pct}%.`);
 
-  // Safety kontrak: hanya nilai eksplisit `true` yang menolak.
-  if (safety?.status === 'available' && safety.security) {
+  // Explicit hazards always reject; missing controls remain unknown even when
+  // GoPlus returned a partial token record.
+  if (safety?.security) {
     const s = safety.security;
     check(rejections, 'mintable', s.mintable !== true, 'Mint authority masih aktif (mintable); suplai dapat ditambah.');
     check(rejections, 'freezable', s.freezable !== true, 'Freeze authority masih aktif; token dapat dibekukan.');
     check(rejections, 'transfer_fee', !s.transferFee, 'Token-2022 memiliki transfer fee.');
     check(rejections, 'transfer_hook', !s.transferHook, 'Token-2022 memiliki transfer hook.');
     check(rejections, 'non_transferable', s.nonTransferable !== true, 'Token tidak dapat ditransfer.');
+    const missing = ['mintable', 'freezable', 'transferFee', 'transferHook', 'nonTransferable'].filter(key => s[key] == null);
+    if (missing.length) {
+      const reason = `Kontrol kontrak GoPlus unknown: ${missing.join(', ')}; field yang tidak tersedia bukan bukti aman.`;
+      if (preset.allowUnknownSafety) warnings.push({ code: 'safety_unknown', severity: 'warn', reason });
+      else rejections.push({ code: 'safety_unknown', severity: 'reject', reason });
+    }
   } else {
     // GoPlus tidak tersedia: audit Jupiter hanya pembanding, bukan pengganti.
     if (!preset.allowUnknownSafety) {

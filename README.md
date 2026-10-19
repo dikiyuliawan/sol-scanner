@@ -110,7 +110,8 @@ Minimum **21 candle tertutup berurutan**; candle berjalan dikeluarkan. Celah int
 - Deep scan memakai sampai 4 candle Gecko + 1 trending; karena batas 8/menit, **dua discover dalam satu menit bisa menghabiskan kuota candle**, dan struktur yang gagal diberi label `unknown` (bukan dikarang). Tunggu satu menit sebelum menjalankan discover berikutnya.
 - HTTP 429 menghormati header `Retry-After` dan memberi cooldown per origin; slot yang gagal dikembalikan.
 - Timeout 10 detik per provider; batas UI 30 detik untuk inspect dan 90 detik untuk discover.
-- **Tidak ada polling otomatis.** Tampilan menghitung umur lokal setiap 15 detik tanpa meminta jaringan.
+- Tidak ada polling harga atau discovery otomatis. Hanya progres job deep scan yang dipoll setiap 2 detik (maksimal 90 detik, tanpa request bertumpuk); tampilan menghitung umur lokal setiap 15 detik tanpa mengambil harga baru.
+- Struktur candle 1 jam memerlukan sedikitnya **50 candle tertutup berurutan** agar EMA50 benar-benar terukur. Data yang lebih pendek tetap `unknown`; hasil job selalu menyertakan mint agar UI dapat memasangkan pembaruan dengan token yang benar.
 
 ## Keamanan kontrak: GoPlus + Jupiter, bukan RugCheck
 
@@ -119,6 +120,8 @@ Minimum **21 candle tertutup berurutan**; candle berjalan dikeluarkan. Celah int
 RugCheck tidak dipakai: hostname `api.rugcheck.xyz` **tidak resolve** dari jaringan pengembangan (NXDOMAIN, diverifikasi lewat resolver sistem dan DoH), sehingga endpoint dan skemanya tidak dapat diverifikasi. Endpoint dan persyaratan akses tidak ditebak.
 
 Skala persen dari kedua sumber berbeda dan **tidak dicampur**: GoPlus mengembalikan `percent` sebagai fraksi 0–1 (dikonversi ke persen), Jupiter memakai poin persentase. Bila sumber tidak tersedia, semua status keamanan `unknown` — **bukan risiko rendah**. Likuiditas tidak membuktikan LP terkunci.
+
+Record GoPlus yang menghilangkan kontrol mint/freeze atau transfer berstatus `partial`, bukan otomatis bersih. Bahaya eksplisit tetap menggugurkan kandidat; kontrol yang belum diketahui menggugurkan preset ketat dan membatasi grade preset lain ke C. Konsentrasi top 10 memakai sepuluh persentase holder terbesar, tidak bergantung urutan respons provider.
 
 ## Snapshots, watchlist, dan SQLite
 
@@ -129,6 +132,7 @@ Tabel: `tokens`, `snapshots`, `discover_runs`, `watchlist`, `plans`. Setiap run 
 ## API
 
 Semua endpoint hanya loopback. Selain `POST`/`DELETE /api/watchlist`, hanya `GET` yang diterima (selain itu `405`).
+Host asing ditolak untuk mengurangi risiko DNS rebinding. Mutasi Watchlist dari browser harus berasal dari origin loopback yang sama; origin asing dan request cross-site ditolak. Klien lokal non-browser tanpa header Origin tetap dapat memakai CRUD.
 
 ```text
 GET    /api/config

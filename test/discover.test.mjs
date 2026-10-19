@@ -88,7 +88,7 @@ test('preset yang mewajibkan keamanan memverifikasi GoPlus sebelum gate final', 
   const agedPool = { ...healthyPool, createdAt: NOW - 200 * 3_600_000 };
   const sources = fakeSources({
     pool: agedPool,
-    security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: null, transferHook: null, metadataMutable: false } }
+    security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
   });
   const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'conservative', limit: 10, skipDeep: true });
   assert.equal(result.rows.length, 1, 'preset ketat tidak lagi selalu kosong');
@@ -112,11 +112,23 @@ test('discover mencatat warning ketika salah satu sumber gagal, tanpa hasil pals
   assert.equal(result.rows.length, 1, 'masih ada kandidat dari trending/dex');
 });
 
+test('Gecko fallback pool mempertahankan timestamp dan provenance saat DEX tidak mengembalikan pool', async () => {
+  const sources = fakeSources();
+  const geckoPool = { ...healthyPool, source: 'GeckoTerminal', createdAt: NOW - 72 * 3_600_000 };
+  sources.gecko.trending = async () => ({ status: 'available', source: 'GeckoTerminal', pools: [{ ...geckoPool, mint: MINT }], reason: null });
+  sources.dexscreener.batch = async () => ({ status: 'available', pools: new Map(), reason: null });
+
+  const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'balanced', skipDeep: true });
+  assert.equal(result.rows.length, 1, JSON.stringify(result.rejected));
+  assert.equal(result.rows[0].market.source, 'GeckoTerminal');
+  assert.equal(result.rows[0].market.ageHours, 72);
+});
+
 test('deep scan melengkapi struktur dan rencana entry lewat job', async t => {
   const sources = fakeSources({
     pool: healthyPool,
     candles: hourlyCandles(),
-    security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: null, transferHook: null, metadataMutable: false } }
+    security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
   });
   const db = createDb(':memory:');
   const jobs = createJobs({ clock: () => NOW });
@@ -144,6 +156,11 @@ test('discover mengembalikan cached true pada permintaan kedua dalam 60 detik', 
   assert.equal(first.cached, undefined);
   assert.equal(second.cached, true);
   assert.equal(first.rows[0].mint, second.rows[0].mint);
+  assert.ok(first.jobId, 'deep scan should expose a pollable job');
+  assert.equal(second.jobId, first.jobId, 'cached response must preserve the original deep-scan job');
+  assert.equal(second.jobTotal, first.jobTotal);
+  const jobResponse = await fetch(`${base}/api/jobs/${second.jobId}`);
+  assert.equal(jobResponse.status, 200, 'job id returned by cached response remains pollable');
   db.close();
 });
 
@@ -163,6 +180,14 @@ test('watchlist POST/GET/DELETE memakai SQLite lokal dan menolak mint invalid', 
 
   const empty = await (await fetch(`${base}/api/watchlist`)).json();
   assert.deepEqual(empty.items, []);
+
+  const crossOrigin = await fetch(`${base}/api/watchlist`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: 'https://attacker.example' },
+    body: JSON.stringify({ mint: MINT, note: 'cross-origin attempt' })
+  });
+  assert.equal(crossOrigin.status, 403);
+  assert.deepEqual((await (await fetch(`${base}/api/watchlist`)).json()).items, [], 'rejected cross-origin request must not mutate local state');
 
   const added = await fetch(`${base}/api/watchlist`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: MINT, note: 'uji', snapshot: { symbol: 'EX' } }) });
   assert.equal(added.status, 200);

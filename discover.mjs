@@ -5,6 +5,8 @@ import { estimateSlippage } from './screen/score.mjs';
 import { analyzeStructure, parseCandles } from './analysis/candles.mjs';
 import { buildEntryPlan } from './analysis/entryplan.mjs';
 
+// Symbol tidak diserialkan ke JSON: bukti lengkap hanya untuk job internal.
+export const DISCOVERY_CONTEXT = Symbol('discoveryContext');
 const base58 = value => typeof value === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 
 /**
@@ -102,6 +104,7 @@ export function createDiscovery({ jupiter, dexscreener, gecko, goplus, db = null
       universe: { total: universe.length, checked: prefiltered.length, evaluated, accepted: ranking.accepted, rejected: ranking.rejectedCount },
       warnings,
       rows,
+      [DISCOVERY_CONTEXT]: new Map(ranking.ranked.map(candidate => [candidate.mint, candidate])),
       rejected: ranking.rejected,
       deepScanPending: !skipDeep ? rows.filter(row => row.score !== null).slice(0, DISCOVERY.deepScanTokens).map(row => row.mint) : []
     };
@@ -144,7 +147,7 @@ export function serializeCandidate(candidate, preset, warnings = []) {
       change: pool?.change ?? null,
       ageHours,
       slippagePct: slippage,
-      source: 'DEX Screener',
+      source: pool?.source ?? 'DEX Screener',
       fetchedAt: pool?.fetchedAt ?? null
     },
     safety: {

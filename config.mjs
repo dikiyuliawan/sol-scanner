@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const CONFIG_VERSION = '2026-10-19.2';
+export const CONFIG_VERSION = '2026-10-19.3';
 
 /**
  * Preset hanya mengubah angka, bukan kode. Semua ambang di sini adalah

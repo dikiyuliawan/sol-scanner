@@ -19,7 +19,7 @@ export function createRiskProvider({ goplus = createGoPlusSource(), jupiter = cr
       }).catch(error => ({ status: 'unknown', token: null, reason: error?.message ?? 'Jupiter gagal' }))
     ]);
 
-    const s = security.status === 'available' ? security.security : null;
+    const s = security.security ?? null;
     const audit = search.token?.audit ?? null;
     const findings = [];
 
@@ -34,12 +34,14 @@ export function createRiskProvider({ goplus = createGoPlusSource(), jupiter = cr
         title: 'Freeze authority',
         reason: s.freezable === true ? 'Freeze authority masih aktif; saldo dapat dibekukan.' : s.freezable === false ? 'Freeze authority sudah dimatikan menurut GoPlus.' : 'Status freeze authority tidak dapat dibaca.'
       });
+      const transferUnknown = s.transferFee == null || s.transferHook == null;
       findings.push({
-        level: s.transferFee ? 'warning' : s.transferHook ? 'warning' : 'info',
+        level: s.transferFee || s.transferHook ? 'warning' : transferUnknown ? 'unknown' : 'info',
         title: 'Perilaku transfer Token-2022',
         reason: s.transferFee ? 'Token memiliki transfer fee; nilai diterima berbeda dari nilai transaksi.'
           : s.transferHook ? 'Token memiliki transfer hook; logika pihak ketiga berjalan saat transfer.'
-            : 'Tidak ada transfer fee atau hook yang dilaporkan GoPlus.'
+            : transferUnknown ? 'Status transfer fee atau hook tidak lengkap; nilai kosong bukan bukti tidak ada.'
+              : 'Tidak ada transfer fee atau hook yang dilaporkan GoPlus.'
       });
       findings.push({
         level: s.top10Pct == null ? 'unknown' : s.top10Pct > 35 ? 'warning' : 'info',
@@ -67,7 +69,7 @@ export function createRiskProvider({ goplus = createGoPlusSource(), jupiter = cr
 
     const critical = findings.filter(finding => finding.level === 'warning').length;
     const unknown = findings.filter(finding => finding.level === 'unknown').length;
-    const status = !s && !audit ? 'unknown' : unknown ? 'partial' : 'available';
+    const status = !s && !audit ? 'unknown' : security.status !== 'available' || unknown ? 'partial' : 'available';
 
     return {
       status,
@@ -81,8 +83,9 @@ export function createRiskProvider({ goplus = createGoPlusSource(), jupiter = cr
         unknownFindings: unknown,
         mintable: s.mintable,
         freezable: s.freezable,
-        transferFee: Boolean(s.transferFee),
-        transferHook: Boolean(s.transferHook),
+        transferFee: s.transferFee == null ? null : Boolean(s.transferFee),
+        transferHook: s.transferHook == null ? null : Boolean(s.transferHook),
+        nonTransferable: s.nonTransferable,
         top10Pct: s.top10Pct,
         holderCount: s.holderCount
       } : null,

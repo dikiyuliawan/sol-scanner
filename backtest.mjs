@@ -22,15 +22,24 @@ export const DEFAULT_HORIZONS = [1, 6, 24, 72];
 
 export function parseArgs(argv) {
   const args = { input: null, db: 'data/scanner.db', horizons: DEFAULT_HORIZONS, minReturnPct: 10 };
+  const horizons = [];
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === '--input') args.input = argv[++index];
     else if (token === '--db') args.db = argv[++index];
-    else if (token === '--horizon') args.horizons = [Number(argv[++index])].filter(Number.isFinite);
-    else if (token === '--min-return') args.minReturnPct = Number(argv[++index]);
+    else if (token === '--horizon') {
+      const horizon = Number(argv[++index]);
+      if (!Number.isFinite(horizon) || horizon <= 0) throw new Error('--horizon harus berupa angka positif dan finite.');
+      horizons.push(horizon);
+    }
+    else if (token === '--min-return') {
+      const minReturnPct = Number(argv[++index]);
+      if (!Number.isFinite(minReturnPct)) throw new Error('--min-return harus berupa angka finite.');
+      args.minReturnPct = minReturnPct;
+    }
     else if (token === '--help' || token === '-h') args.help = true;
   }
-  if (!args.horizons.length) args.horizons = DEFAULT_HORIZONS;
+  if (horizons.length) args.horizons = [...new Set(horizons)];
   return args;
 }
 

@@ -34,7 +34,7 @@ function component(key, label, weight, score, evidence, note = null) {
 
 export function scoreSafety(candidate) {
   const { safety, jupiter } = candidate;
-  const s = safety?.status === 'available' ? safety.security : null;
+  const s = safety?.security ?? null;
   const audit = jupiter?.audit ?? null;
   const evidence = [];
   let score = 100;
@@ -62,8 +62,12 @@ export function scoreSafety(candidate) {
     if (s.transferHook) score -= 100;
     if (s.nonTransferable) score -= 100;
     if (s.metadataMutable === true) score -= 5;
-    evidence.push({ metric: 'Transfer fee / hook', value: s.transferFee ? 'fee' : s.transferHook ? 'hook' : 'tidak ada', source: 'GoPlus' });
-    evidence.push({ metric: 'LP holder teridentifikasi', value: s.lpHolderPct === null ? 'unknown' : `${s.lpHolderPct.toFixed(1)}%`, source: 'GoPlus' });
+    if (s.nonTransferable == null) score -= 10;
+    const transferUnknown = s.transferFee == null || s.transferHook == null;
+    if (transferUnknown && !s.transferFee && !s.transferHook) score -= 20;
+    evidence.push({ metric: 'Transfer fee / hook', value: s.transferFee ? 'fee' : s.transferHook ? 'hook' : transferUnknown ? 'unknown' : 'tidak ada', source: 'GoPlus' });
+    evidence.push({ metric: 'Transferability', value: s.nonTransferable == null ? 'unknown' : s.nonTransferable ? 'non-transferable' : 'transferable', source: 'GoPlus' });
+    evidence.push({ metric: 'LP holder teridentifikasi', value: s.lpHolderPct == null ? 'unknown' : `${s.lpHolderPct.toFixed(1)}%`, source: 'GoPlus' });
   } else {
     evidence.push({ metric: 'Transfer fee / hook', value: 'unknown', source: 'GoPlus tidak tersedia' });
   }
@@ -205,7 +209,10 @@ export function penaltiesFor(candidate, preset) {
     penalties.push({ code: 'fdv_gap', points: 5, reason: `FDV ${(pool.fdv / pool.marketCap).toFixed(2)}x market cap.` });
   }
   if (pool.change?.h24 != null && pool.change.h24 > 150) penalties.push({ code: 'pump_24h', points: 8, reason: `Sudah naik ${pool.change.h24.toFixed(0)}% dalam 24 jam.` });
-  if (candidate.safety?.status !== 'available') penalties.push({ code: 'safety_unknown', points: 10, reason: 'Keamanan kontrak unknown; grade dibatasi C.' });
+  const safetyFields = candidate.safety?.security;
+  const safetyUnknown = candidate.safety?.status !== 'available' || !safetyFields
+    || ['mintable', 'freezable', 'nonTransferable', 'transferFee', 'transferHook'].some(key => safetyFields[key] == null);
+  if (safetyUnknown) penalties.push({ code: 'safety_unknown', points: 10, reason: 'Keamanan kontrak unknown; grade dibatasi C.' });
   if (pool.liquidityUsd !== null && pool.liquidityUsd < preset.minLiquidityUsd * 1.5) {
     penalties.push({ code: 'liquidity_thin', points: 4, reason: 'Likuiditas hanya sedikit di atas ambang minimum.' });
   }
@@ -234,7 +241,9 @@ export function scoreCandidate(candidate, preset) {
   const base = totalWeight ? weighted / totalWeight : null;
   const penaltyPoints = penalties.reduce((sum, item) => sum + item.points, 0);
   const score = base === null ? null : Math.round(clamp(base - penaltyPoints));
-  const safetyUnknown = candidate.safety?.status !== 'available';
+  const safetyFields = candidate.safety?.security;
+  const safetyUnknown = candidate.safety?.status !== 'available' || !safetyFields
+    || ['mintable', 'freezable', 'nonTransferable', 'transferFee', 'transferHook'].some(key => safetyFields[key] == null);
   return {
     score,
     grade: gradeFor(score, { safetyUnknown }),

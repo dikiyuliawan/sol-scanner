@@ -8,7 +8,7 @@ import { createJupiterSource } from './sources/jupiter.mjs';
 import { createDexScreenerSource } from './sources/dexscreener.mjs';
 import { createGeckoSource } from './sources/gecko.mjs';
 import { createGoPlusSource } from './sources/goplus.mjs';
-import { createDiscovery, createDeepScan, serializeCandidate } from './discover.mjs';
+import { createDiscovery, createDeepScan, serializeCandidate, DISCOVERY_CONTEXT } from './discover.mjs';
 import { createJobs } from './jobs.mjs';
 import { createDb } from './db.mjs';
 import { evaluateGates } from './screen/gates.mjs';
@@ -27,11 +27,27 @@ export function validMint(value) {
 export function number(value) {
   return (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && Number.isFinite(Number(value)) ? Number(value) : null;
 }
+async function readTextLimited(response, maxBytes) {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      try { await reader.cancel(); } catch { /* oversized body is already rejected */ }
+      throw new Error('Respons terlalu besar');
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks, size));
+}
 export async function getJSON(url, fetcher = fetch) {
   const response = await fetcher(url, { signal: AbortSignal.timeout(10000), redirect: 'error', headers: { Accept: 'application/json' } });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const text = await response.text();
-  if (text.length > 4_000_000) throw new Error('Respons terlalu besar');
+  const text = await readTextLimited(response, 4_000_000);
   return JSON.parse(text);
 }
 export function normalizeMarket(data, mint, now = Date.now()) {
@@ -78,6 +94,17 @@ function sendJSON(res, headers, status, data) {
   res.end(JSON.stringify(data));
 }
 
+function allowedLocalMutationOrigin(req) {
+  if (!req.headers.origin) return true; // non-browser local clients need no Origin header
+  try {
+    const origin = new URL(req.headers.origin);
+    const expected = new URL(`http://${req.headers.host}`);
+    return origin.protocol === 'http:' && origin.origin === expected.origin && ['localhost', '127.0.0.1'].includes(origin.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 async function readBody(req, limit = 32_000) {
   let size = 0;
   const chunks = [];
@@ -115,10 +142,16 @@ export function createServer({
     const headers = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'", 'Cache-Control': 'no-store' };
     const send = (status, data, type = 'application/json; charset=utf-8') => { res.writeHead(status, { ...headers, 'Content-Type': type }); res.end(type.startsWith('application/json') ? JSON.stringify(data) : data); };
     try {
+      let hostname;
+      try { hostname = new URL(`http://${req.headers.host}`).hostname.toLowerCase(); } catch { /* invalid Host is rejected below */ }
+      if (!['localhost', '127.0.0.1', '[::1]'].includes(hostname)) return send(403, { error: 'Host harus berupa alamat loopback lokal.' });
       const url = new URL(req.url, 'http://localhost');
       const readOnly = req.method === 'GET';
 
       if (url.pathname.startsWith('/api/watchlist')) {
+        if ((req.method === 'POST' || req.method === 'DELETE') && (!allowedLocalMutationOrigin(req) || req.headers['sec-fetch-site'] === 'cross-site')) {
+          return send(403, { error: 'Mutasi watchlist hanya diizinkan dari origin lokal yang sama.' });
+        }
         if (!db.available) return send(503, { error: db.reason });
         if (readOnly && url.pathname === '/api/watchlist') {
           const items = db.listWatch();
@@ -138,16 +171,15 @@ export function createServer({
         return send(405, { error: 'Method tidak didukung untuk watchlist.' });
       }
 
+      if (req.method !== 'GET') return send(405, { error: 'Hanya GET read-only yang diizinkan.' });
+
       if (url.pathname === '/api/discover') {
-        if (req.method !== 'GET') return send(405, { error: 'Hanya GET read-only yang diizinkan.' });
         const preset = url.searchParams.get('preset') || 'balanced';
         const limit = Math.min(DISCOVERY.resultLimit, Math.max(1, Number(url.searchParams.get('limit')) || DISCOVERY.resultLimit));
         const key = `${preset}:${limit}`;
         const hit = discoverCache.get(key);
         if (hit && Date.now() - hit.at < 60_000) return send(200, { ...hit.data, cached: true });
         const result = await discover({ preset, limit });
-        discoverCache.set(key, { at: Date.now(), data: result });
-        if (discoverCache.size > 8) discoverCache.delete(discoverCache.keys().next().value);
 
         // Simpan snapshot untuk diff antar-run dan riwayat.
         if (db.available) {
@@ -164,7 +196,8 @@ export function createServer({
           const byMint = new Map(result.rows.map(row => [row.mint, row]));
           job = jobs.create(result.deepScanPending, async mint => {
             const base = byMint.get(mint);
-            const candidate = {
+            const original = result[DISCOVERY_CONTEXT]?.get(mint);
+            const candidate = original ? { ...original, now: clock() } : {
               mint,
               now: clock(),
               // Rekonstruksi konteks Jupiter dari baris awal supaya skor ulang
@@ -234,7 +267,10 @@ export function createServer({
             };
           });
         }
-        return send(200, { ...result, jobId: job?.id ?? null, jobTotal: job?.total ?? 0 });
+        const response = { ...result, jobId: job?.id ?? null, jobTotal: job?.total ?? 0 };
+        discoverCache.set(key, { at: Date.now(), data: response });
+        if (discoverCache.size > 8) discoverCache.delete(discoverCache.keys().next().value);
+        return send(200, response);
       }
 
       if (url.pathname.startsWith('/api/jobs/')) {
@@ -276,7 +312,6 @@ export function createServer({
         return send(200, { mint, snapshots: db.snapshotHistory(mint, 50), plan: db.latestPlan(mint) });
       }
 
-      if (req.method !== 'GET') return send(405, { error: 'Hanya GET read-only yang diizinkan.' });
       if (url.pathname === '/api/scan') {
         const mint = url.searchParams.get('mint')?.trim();
         if (!validMint(mint)) return send(400, { error: 'Masukkan alamat mint Solana base58 yang terdekode menjadi 32 byte. Validasi format tidak membuktikan alamat merupakan akun mint.' });

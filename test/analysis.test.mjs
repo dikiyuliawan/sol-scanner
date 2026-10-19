@@ -59,9 +59,12 @@ test('analyzeStructure menandai uptrend, HH/HL, dan jarak ke high', () => {
   assert.ok(structure.distanceToHighPct < 0, 'harga di atas high 20 periode sebelumnya');
 });
 
-test('analyzeStructure unknown bila candle kurang dari 30', () => {
+test('analyzeStructure unknown bila candle kurang dari 50 untuk EMA50', () => {
   const structure = analyzeStructure([{ time: 1, open: 1, high: 1, low: 1, close: 1, volume: 1 }]);
   assert.equal(structure.status, 'unknown');
+  const fortyNine = parseCandles(candles({ count: 49 }), { intervalSeconds: 3600, now: NOW });
+  assert.equal(analyzeStructure(fortyNine.candles).status, 'unknown');
+  assert.match(analyzeStructure(fortyNine.candles).reason, /50 candle/);
 });
 
 test('entry plan uptrend menghasilkan zona, invalidasi di bawah entry, dan R:R terukur', () => {
@@ -74,6 +77,16 @@ test('entry plan uptrend menghasilkan zona, invalidasi di bawah entry, dan R:R t
   assert.ok(plan.riskReward > 0);
   assert.equal(plan.targets.length, 3);
   assert.ok(plan.positionUsd > 0);
+});
+
+test('entry plan breakout dengan range historis nol mempertahankan pullback depth unknown tanpa crash', () => {
+  const plan = buildEntryPlan({
+    status: 'available', close: 101, atr14: 1, ema20: 100, high20: 100, low20: 100,
+    trend: 'uptrend', rsi14: 60
+  }, { slippagePct: 0.2 });
+  assert.equal(plan.setup, 'breakout_retest');
+  assert.equal(plan.pullbackDepthPct, null);
+  assert.ok(['plan', 'no_plan'].includes(plan.status));
 });
 
 test('entry plan menolak slippage di atas batas tanpa memaksakan rencana', () => {
@@ -128,4 +141,3 @@ test('plan sideways tetap memberi R:R terukur dari measured move dengan batas 6 
   assert.equal(plan.setup, 'range_breakout');
   assert.ok(Number.isFinite(plan.riskReward));
 });
-

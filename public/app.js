@@ -84,7 +84,8 @@ $('preset').addEventListener('change', presetSummary);
 /* ---------------- discover ---------------- */
 let discoverData = null;
 let jobTimer = null;
-
+let jobGeneration = 0;
+const openDetails = new Set();
 function scoreBadge(score, grade) {
   const el = node('div', undefined, `score grade-${(grade || 'unknown').toLowerCase()}`);
   el.append(node('strong', score === null ? '—' : String(score)), node('span', grade ?? 'unknown'));
@@ -137,12 +138,14 @@ function renderCandidates(data) {
     action.append(detailButton);
     tr.append(action);
     tbody.append(tr);
+    if (openDetails.has(row.mint)) toggleDetail(tr, row, true);
   }
 }
 
-function toggleDetail(tr, row) {
+function toggleDetail(tr, row, restore = false) {
   const next = tr.nextElementSibling;
-  if (next?.classList.contains('detail-row')) { next.remove(); return; }
+  if (!restore && next?.classList.contains('detail-row')) { next.remove(); openDetails.delete(row.mint); return; }
+  openDetails.add(row.mint);
   const detail = node('tr', undefined, 'detail-row');
   const cell = node('td');
   cell.colSpan = 13;
@@ -188,7 +191,9 @@ function toggleDetail(tr, row) {
     plan.append(node('p', 'Deep scan menemukan pelanggaran gate yang tidak terlihat saat ranking awal:', 'hint'));
     for (const item of row.disqualified) plan.append(node('p', `${gateLabel(item.code)}: ${item.reason}`, 'hint'));
   }
-  if (row.entryPlan?.status === 'plan') {
+  if (row.disqualified?.length) {
+    plan.append(node('p', 'Rencana entry dinonaktifkan karena kandidat gugur gate.', 'hint'));
+  } else if (row.entryPlan?.status === 'plan') {
     const p = row.entryPlan;
     const values = [
       ['Setup', p.setup], ['Zona entry', `${usd(p.entryLow)} – ${usd(p.entryHigh)}`], ['Invalidasi', usd(p.invalidation)],
@@ -209,9 +214,7 @@ function toggleDetail(tr, row) {
   const watchButton = node('button', '+ Watchlist', 'text-button');
   watchButton.type = 'button';
   watchButton.addEventListener('click', async () => {
-    const response = await fetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: row.mint, snapshot: { score: row.score, grade: row.grade, price: row.market.priceUsd } }) });
-    const result = await response.json();
-    watchButton.textContent = response.ok ? 'Tersimpan ✓' : (result.error || 'Gagal menyimpan');
+    await saveWatch(watchButton, row.mint, { symbol: row.symbol, score: row.score, grade: row.grade, price: row.market.priceUsd });
   });
   const inspectButton = node('button', 'Buka di Inspect', 'text-button');
   inspectButton.type = 'button';
@@ -256,11 +259,22 @@ function renderDiscover(data) {
 }
 
 function pollJob(jobId, total) {
-  clearInterval(jobTimer);
-  jobTimer = setInterval(async () => {
+  clearTimeout(jobTimer);
+  const generation = ++jobGeneration;
+  const deadline = Date.now() + 90_000;
+  const tick = async () => {
     let job;
-    try { job = await (await fetch(`/api/jobs/${jobId}`, { cache: 'no-store' })).json(); } catch { return; }
-    if (job.error) { $('deep-status').textContent = `deep scan: ${job.error}`; clearInterval(jobTimer); return; }
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { signal: AbortSignal.timeout(10000), cache: 'no-store' });
+      job = await response.json();
+      if (!response.ok || job.error) throw new Error(job.error || `HTTP ${response.status}`);
+    } catch (error) {
+      if (generation !== jobGeneration) return;
+      $('deep-status').textContent = `deep scan tertunda: ${error.message}. Hasil awal belum final.`;
+      if (Date.now() < deadline) jobTimer = setTimeout(tick, 2000);
+      return;
+    }
+    if (generation !== jobGeneration || !discoverData) return;
     $('deep-status').textContent = `deep scan: ${job.completed}/${total}${job.failures ? ` · ${job.failures} gagal` : ''}`;
     for (const result of job.results) {
       if (!result.ok || !discoverData) continue;
@@ -275,20 +289,29 @@ function pollJob(jobId, total) {
       row.structure = result.result.structure;
       row.entryPlan = result.result.entryPlan;
       row.disqualified = result.result.disqualified ?? null;
-      const tr = document.querySelector(`tr.candidate-row[data-mint="${CSS.escape(result.mint)}"]`);
-      if (tr) tr.querySelector('.score')?.replaceWith(scoreBadge(row.score, row.grade));
     }
+    // Perbarui seluruh bukti, setup, dan status gugur pada setiap progres;
+    // kandidat gugur tidak boleh dipromosikan oleh skor tingginya.
+    discoverData.rows.sort((a, b) => Number(Boolean(a.disqualified?.length)) - Number(Boolean(b.disqualified?.length)) || (b.score ?? -1) - (a.score ?? -1));
+    discoverData.rows.forEach((row, index) => { row.rank = index + 1; });
+    renderCandidates(discoverData);
     if (job.status === 'done') {
-      clearInterval(jobTimer);
-      discoverData.rows.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
-      discoverData.rows.forEach((row, index) => { row.rank = index + 1; });
-      renderCandidates(discoverData);
+      $('discover-status').textContent = `Deep scan selesai · ${discoverData.rows.filter(row => !row.disqualified?.length).length} kandidat tampil masih lolos gate · ${job.failures || 0} gagal dianalisis.`;
+    } else if (Date.now() < deadline) {
+      jobTimer = setTimeout(tick, 2000);
+    } else {
+      $('deep-status').textContent += ' · batas waktu; hasil belum final, jalankan Discover lagi.';
     }
-  }, 2000);
+  };
+  jobTimer = setTimeout(tick, 2000);
 }
 
 $('discover-button').addEventListener('click', async () => {
   const preset = $('preset').value;
+  clearTimeout(jobTimer);
+  jobGeneration++;
+  discoverData = null;
+  openDetails.clear();
   $('discover-button').disabled = true;
   $('discover-results').hidden = true;
   $('discover-status').className = '';
@@ -352,6 +375,8 @@ function renderHistory(data) {
 function render(data) {
   const market = data.market, risk = data.risk, primary = market.primary;
   currentMint = data.mint;
+  $('add-watch').textContent = '+ Tambah ke watchlist';
+  $('add-watch').disabled = false;
   $('token-name').textContent = primary ? `${primary.tokenName || 'Token'}${primary.tokenSymbol ? ` / ${primary.tokenSymbol}` : ''}` : 'Token belum teridentifikasi';
   $('token-mint').textContent = data.mint;
   $('timestamp').textContent = `Snapshot diterima ${new Date(data.checkedAt).toLocaleString('id-ID')} · ${data.cached ? 'cache ≤ 30 detik' : 'scan baru'}`;
@@ -405,19 +430,37 @@ $('scan-form').addEventListener('submit', async event => {
   } finally { $('scan-button').disabled = false; $('example').disabled = false; $('mint').disabled = false; }
 });
 
+async function saveWatch(button, mint, snapshot) {
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint, snapshot }), signal: AbortSignal.timeout(10000) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    button.textContent = 'Tersimpan ✓';
+  } catch (error) {
+    button.textContent = `Gagal menyimpan: ${error.message}`;
+  } finally { button.disabled = false; }
+}
+
 $('add-watch').addEventListener('click', async () => {
   if (!currentMint) return;
-  const response = await fetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: currentMint, snapshot: { at: new Date().toISOString() } }) });
-  const result = await response.json();
-  $('add-watch').textContent = response.ok ? 'Tersimpan ✓' : (result.error || 'Gagal menyimpan');
+  const mint = currentMint;
+  const data = JSON.parse($('raw').textContent);
+  await saveWatch($('add-watch'), mint, { symbol: data.market.primary?.tokenSymbol, price: data.market.primary?.priceUsd, at: data.checkedAt });
 });
 
 /* ---------------- watchlist ---------------- */
+let watchGeneration = 0;
 async function loadWatchlist() {
+  const generation = ++watchGeneration;
+  $('watch-status').className = '';
   $('watch-status').textContent = 'Memuat watchlist…';
+  $('watch-items').replaceChildren();
+  $('watch-runs').replaceChildren();
   try {
-    const response = await fetch('/api/watchlist', { cache: 'no-store' });
+    const response = await fetch('/api/watchlist', { signal: AbortSignal.timeout(10000), cache: 'no-store' });
     const data = await response.json();
+    if (generation !== watchGeneration) return;
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     $('watch-status').textContent = data.items.length ? `${data.items.length} token dipantau.` : 'Watchlist kosong. Tambahkan dari Discover atau Inspect.';
     const items = $('watch-items');
@@ -432,7 +475,17 @@ async function loadWatchlist() {
       inspect.addEventListener('click', () => { $('mint').value = item.mint; showTab('inspect'); $('scan-form').requestSubmit(); });
       const remove = node('button', 'Hapus', 'text-button');
       remove.type = 'button';
-      remove.addEventListener('click', async () => { await fetch(`/api/watchlist/${item.mint}`, { method: 'DELETE' }); loadWatchlist(); });
+      remove.addEventListener('click', async () => {
+        remove.disabled = true;
+        try {
+          const response = await fetch(`/api/watchlist/${encodeURIComponent(item.mint)}`, { method: 'DELETE', signal: AbortSignal.timeout(10000) });
+          if (!response.ok) { const result = await response.json(); throw new Error(result.error || `HTTP ${response.status}`); }
+          await loadWatchlist();
+        } catch (error) {
+          $('watch-status').className = 'error';
+          $('watch-status').textContent = `Gagal menghapus: ${error.message}`;
+        } finally { remove.disabled = false; }
+      });
       actions.append(inspect, remove);
       box.append(head, node('p', `skor ${item.snapshot?.score ?? 'unknown'} · grade ${item.snapshot?.grade ?? 'unknown'} · harga ${usd(item.snapshot?.price)}`, 'hint'), actions);
       items.append(box);
@@ -448,6 +501,7 @@ async function loadWatchlist() {
     }
     if (!data.history.length) runs.append(node('p', 'Belum ada run discovery tersimpan.', 'hint'));
   } catch (error) {
+    if (generation !== watchGeneration) return;
     $('watch-status').className = 'error';
     $('watch-status').textContent = `Watchlist tidak dapat dimuat: ${error.message}`;
   }

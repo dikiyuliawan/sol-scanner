@@ -95,6 +95,18 @@ test('getJSON membaca header Retry-After pada 429', async () => {
   await assert.rejects(() => getJSON('https://example.test', { fetcher }), error => error.retryAfterMs === 42_000);
 });
 
+test('getJSON membatasi byte UTF-8 dan menolak body besar saat masih membaca stream', async () => {
+  const unicode = async () => new Response('"€€"');
+  await assert.rejects(() => getJSON('https://example.test', { fetcher: unicode, maxBytes: 6 }), error => error instanceof HttpError && /terlalu besar/.test(error.message));
+  let cancelled = false;
+  const oversized = async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode('x'.repeat(100))); },
+    cancel() { cancelled = true; }
+  }));
+  await assert.rejects(() => getJSON('https://example.test', { fetcher: oversized, maxBytes: 16 }), error => error instanceof HttpError && /terlalu besar/.test(error.message));
+  assert.equal(cancelled, true, 'body stream must be cancelled as soon as byte limit is exceeded');
+});
+
 test('provenance membedakan nilai nol dari unknown', () => {
   assert.equal(factValue(fact(0, 'src')), 0);
   assert.equal(fact(0, 'src').status, 'available');
