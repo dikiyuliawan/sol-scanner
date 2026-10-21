@@ -107,7 +107,7 @@ test('normalizeTrendingPool membaca hubungan token dan volume', () => {
 
 test('gecko candle menolak pool tidak valid tanpa memanggil jaringan', async () => {
   let calls = 0;
-  const source = createGeckoSource({ fetcher: async () => { calls += 1; return reply({}); } });
+  const source = createGeckoSource({ minGapMs: 0, interactiveWaitMs: 0, fetcher: async () => { calls += 1; return reply({}); } });
   const result = await source.candles('bad/../pool', MINT);
   assert.equal(result.status, 'unknown');
   assert.equal(calls, 0);
@@ -115,7 +115,7 @@ test('gecko candle menolak pool tidak valid tanpa memanggil jaringan', async () 
 
 test('gecko candle meminta timeframe dan token yang eksplisit', async () => {
   let observed;
-  const source = createGeckoSource({ fetcher: async (url, options) => { observed = { url, options }; return reply({ data: { attributes: { ohlcv_list: [[1, 1, 1, 1, 1, 1]] } }, meta: {} }); } });
+  const source = createGeckoSource({ minGapMs: 0, interactiveWaitMs: 0, fetcher: async (url, options) => { observed = { url, options }; return reply({ data: { attributes: { ohlcv_list: [[1, 1, 1, 1, 1, 1]] } }, meta: {} }); } });
   const result = await source.candles(POOL, MINT, { granularity: 'hour', aggregate: 1, limit: 200 });
   assert.equal(result.status, 'available');
   const url = new URL(observed.url);
@@ -128,7 +128,7 @@ test('gecko candle meminta timeframe dan token yang eksplisit', async () => {
 
 test('gecko 429 memicu cooldown dan request berikutnya tidak menembak origin', async () => {
   let calls = 0, now = 1_800_000_000_000;
-  const source = createGeckoSource({ clock: () => now, fetcher: async () => { calls += 1; return new Response('', { status: 429, headers: { 'retry-after': '60' } }); } });
+  const source = createGeckoSource({ minGapMs: 0, interactiveWaitMs: 0, clock: () => now, fetcher: async () => { calls += 1; return new Response('', { status: 429, headers: { 'retry-after': '60' } }); } });
   const first = await source.trending(1);
   assert.equal(first.status, 'unknown');
   const second = await source.trending(2);

@@ -1,7 +1,7 @@
 import { LIMITS } from '../config.mjs';
 import { createCache } from '../lib/cache.mjs';
 import { createLimiter, rateLimitError } from '../lib/limiter.mjs';
-import { getJSON, errorReason } from '../lib/http.mjs';
+import { getJSON, errorReason, createBreaker, HttpError } from '../lib/http.mjs';
 import { finiteOrNull } from '../lib/provenance.mjs';
 
 export const DEX_DOCS = 'https://docs.dexscreener.com/api/reference';
@@ -52,25 +52,71 @@ export function normalizeBatchPair(pair, fetchedAt) {
   };
 }
 
+/**
+ * DEX Screener selalu melaporkan harga, valuasi, dan perubahan harga untuk
+ * token BASE sebuah pool. Kalau mint yang dicari justru menjadi token QUOTE,
+ * angka itu milik token lain dan tidak boleh dipakai sebagai harga token
+ * yang dicari: nilainya jadi unknown, bukan dihapus.
+ */
+export function resolveForMint(pair, mint) {
+  const targetIsBase = pair.baseMint === mint;
+  return {
+    ...pair,
+    targetIsBase,
+    priceUsd: targetIsBase ? pair.priceUsd : null,
+    marketCap: targetIsBase ? pair.marketCap : null,
+    fdv: targetIsBase ? pair.fdv : null,
+    change: targetIsBase ? pair.change : { m5: null, h1: null, h6: null, h24: null }
+  };
+}
+
+/**
+ * Pool utama untuk satu mint: pool dengan mint sebagai base token (harga
+ * dan valuasi milik mint itu sendiri) dipilih lebih dulu, lalu likuiditas
+ * tertinggi, lalu volume 24 jam tertinggi. Pool dengan mint sebagai quote
+ * hanya dipakai bila tidak ada pool base sama sekali.
+ */
+export function betterPool(a, b) {
+  const rank = pool => (pool.targetIsBase ? 1 : 0);
+  if (rank(a) !== rank(b)) return rank(a) > rank(b);
+  if ((a.liquidityUsd ?? -1) !== (b.liquidityUsd ?? -1)) return (a.liquidityUsd ?? -1) > (b.liquidityUsd ?? -1);
+  return (a.volume?.h24 ?? -1) > (b.volume?.h24 ?? -1);
+}
+
+export function pickMainPool(pairs, mint) {
+  const base = pairs.filter(pair => pair.targetIsBase);
+  const quote = pairs.filter(pair => !pair.targetIsBase);
+  const sortBest = list => list.slice().sort(betterPool);
+  return sortBest(base)[0] ?? sortBest(quote)[0] ?? null;
+}
+
 export function createDexScreenerSource({ fetcher = fetch, clock = Date.now } = {}) {
   const limiter = createLimiter({ clock });
   const cache = createCache({ ttlMs: LIMITS.dexscreener.ttlMs, max: LIMITS.dexscreener.max, clock });
+  const breaker = createBreaker({ clock });
   const config = LIMITS.dexscreener;
 
   async function request(path) {
+    const blocked = breaker.check();
+    if (blocked.blocked) {
+      throw new HttpError(`DEX Screener sedang tidak dapat dihubungi (gagal berulang); jeda ${Math.ceil(blocked.retryAfterMs / 1000)} detik sebelum mencoba lagi.`, { url: path });
+    }
     const decision = limiter.tryTake('dexscreener', config.perMinute);
     if (!decision.ok) throw rateLimitError('DEX Screener', decision);
     try {
-      return await getJSON(`${ORIGIN}${path}`, { fetcher });
+      const data = await getJSON(`${ORIGIN}${path}`, { fetcher });
+      breaker.recordSuccess();
+      return data;
     } catch (error) {
       limiter.refund('dexscreener');
+      if (error.transient) breaker.recordFailure();
       if (error.status === 429) limiter.cooldown('dexscreener', error.retryAfterMs ?? 30_000);
       throw error;
     }
   }
 
-  /** Batch: satu request per 30 mint, digabung; satu pool terbaik per token. */
-  async function batch(mints) {
+  /** Batch: satu request per 30 mint, digabung; satu pool utama per token. */
+  async function batch(mints, { refresh = false } = {}) {
     const unique = [...new Set(mints.filter(mint => typeof mint === 'string' && mint))];
     if (!unique.length) return { status: 'empty', source: 'DEX Screener', fetchedAt: new Date(clock()).toISOString(), pools: new Map(), requested: 0, batches: 0, reason: 'Tidak ada mint untuk diperiksa.' };
     const size = config.batchSize;
@@ -83,31 +129,70 @@ export function createDexScreenerSource({ fetcher = fetch, clock = Date.now } = 
         const rows = [];
         for (const chunk of chunks) {
           const part = await request(`/tokens/v1/solana/${chunk.join(',')}`);
-          if (!Array.isArray(part)) throw new Error('skema bukan daftar pair');
+          if (!Array.isArray(part)) throw new Error('Skema respons bukan daftar pool');
           rows.push(...part);
         }
         return rows;
-      });
-      if (!Array.isArray(value)) throw new Error('skema bukan daftar pair');
-      const pools = new Map();
+      }, { bypass: refresh });
+      if (!Array.isArray(value)) throw new Error('Skema respons bukan daftar pool');
+      const byMint = new Map();
       for (const raw of value) {
         const pair = normalizeBatchPair(raw, fetchedAt);
         if (!pair) continue;
         for (const mint of [pair.baseMint, pair.quoteMint]) {
           if (!unique.includes(mint)) continue;
-          const current = pools.get(mint);
-          // Satu pool terbaik per mint: likuiditas tertinggi, lalu volume 24 jam.
-          if (!current || (pair.liquidityUsd ?? -1) > (current.liquidityUsd ?? -1)
-            || ((pair.liquidityUsd ?? -1) === (current.liquidityUsd ?? -1) && (pair.volume.h24 ?? -1) > (current.volume.h24 ?? -1))) {
-            pools.set(mint, pair);
-          }
+          const resolved = resolveForMint(pair, mint);
+          const current = byMint.get(mint);
+          if (!current) { byMint.set(mint, resolved); continue; }
+          if (betterPool(resolved, current)) byMint.set(mint, resolved);
         }
       }
-      return { status: 'available', source: 'DEX Screener', fetchedAt, cached, pools, requested: unique.length, batches: chunks.length, reason: null };
+      return { status: 'available', source: 'DEX Screener', fetchedAt, cached, pools: byMint, requested: unique.length, batches: chunks.length, reason: null };
     } catch (error) {
       return { status: 'unknown', source: 'DEX Screener', fetchedAt, pools: new Map(), requested: unique.length, batches: chunks.length, reason: errorReason(error, 'DEX Screener batch: ') };
     }
   }
 
-  return { name: 'DEX Screener', docs: DEX_DOCS, batch };
+  /**
+   * Semua pool untuk satu mint. Endpoint ini hanya menerima satu alamat,
+   * jadi biayanya satu request per token; dipakai untuk jalur Inspect dan
+   * untuk memeriksa ulang pool utama shortlist Discover.
+   */
+  async function tokenPairs(mint, { refresh = false } = {}) {
+    const fetchedAt = new Date(clock()).toISOString();
+    if (typeof mint !== 'string' || !mint) {
+      return { status: 'unknown', source: 'DEX Screener', fetchedAt, rows: [], reason: 'Alamat mint tidak valid; pool tidak diminta.' };
+    }
+    const key = `pairs:${mint}`;
+    try {
+      const { value, cached } = await cache.resolve(key, () => request(`/token-pairs/v1/solana/${mint}`), { bypass: refresh });
+      if (!Array.isArray(value)) throw new Error('Skema respons bukan daftar pool');
+      return { status: 'available', source: 'DEX Screener', fetchedAt, cached, rows: value, reason: null };
+    } catch (error) {
+      return { status: 'unknown', source: 'DEX Screener', fetchedAt, rows: [], reason: errorReason(error, 'DEX Screener pools: ') };
+    }
+  }
+
+  /** Pool utama yang benar-benar dilaporkan provider untuk satu mint. */
+  async function mainPool(mint, { refresh = false } = {}) {
+    const result = await tokenPairs(mint, { refresh });
+    if (result.status !== 'available') {
+      return { status: result.status, source: result.source, fetchedAt: result.fetchedAt, pool: null, reason: result.reason };
+    }
+    const pairs = result.rows
+      .map(raw => normalizeBatchPair(raw, result.fetchedAt))
+      .filter(Boolean)
+      .map(pair => resolveForMint(pair, mint));
+    const pool = pickMainPool(pairs, mint);
+    return {
+      status: pool ? 'available' : 'empty',
+      source: result.source,
+      fetchedAt: result.fetchedAt,
+      pool,
+      pairs: pairs.length,
+      reason: pool ? null : 'DEX Screener tidak mengembalikan pool Solana untuk mint ini.'
+    };
+  }
+
+  return { name: 'DEX Screener', docs: DEX_DOCS, batch, tokenPairs, mainPool };
 }

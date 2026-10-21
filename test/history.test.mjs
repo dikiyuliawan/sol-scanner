@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHistoryProvider, normalizeHistory, entryContext } from '../history.mjs';
 import { analyzeCandles } from '../signals.mjs';
+import { createGeckoSource } from '../sources/gecko.mjs';
 import { createServer } from '../server.mjs';
 
 const MINT = 'So11111111111111111111111111111111111111112';
@@ -15,7 +16,21 @@ function rows(now = NOW) {
   return Array.from({ length: 21 }, (_, i) => [start - (21 - i) * 900, 100 + i, 101 + i, 99 + i, 100 + i, 100]);
 }
 const payload = (data = rows()) => ({ data: { attributes: { ohlcv_list: data } }, meta: { base: { address: MINT }, quote: { address: QUOTE } } });
+const sourceShape = (data = rows()) => ({ candles: data, meta: { base: { address: MINT }, quote: { address: QUOTE } } });
 const reply = data => new Response(JSON.stringify(data), { status: 200 });
+
+/** Klien GeckoTerminal palsu dengan kontrak yang sama dengan sumber asli. */
+function fakeGecko({ data = rows(), status = 'available', reason = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async candles(pool, mint, options) {
+      calls.push({ pool, mint, options });
+      if (status !== 'available') return { status, source: 'GeckoTerminal', fetchedAt: new Date(NOW).toISOString(), candles: [], meta: null, reason };
+      return { status: 'available', source: 'GeckoTerminal', fetchedAt: new Date(NOW).toISOString(), candles: data, meta: { base: { address: MINT }, quote: { address: QUOTE } }, reason: null };
+    }
+  };
+}
 
 test('SMA20 tepat memakai 20 candle terakhir, bukan 21; baseline resistance mengecualikan latest', () => {
   const r = analyzeCandles(rows(), { now: NOW });
@@ -26,45 +41,50 @@ test('SMA20 tepat memakai 20 candle terakhir, bukan 21; baseline resistance meng
 });
 
 test('identitas mint, pasangan token, dan skema harus cocok', () => {
-  assert.equal(normalizeHistory(payload(), MINT, primary, NOW).status, 'available');
-  const reversed = payload();
+  assert.equal(normalizeHistory(sourceShape(), MINT, primary, NOW).status, 'available');
+  const reversed = sourceShape();
   [reversed.meta.base, reversed.meta.quote] = [reversed.meta.quote, reversed.meta.base];
   assert.equal(normalizeHistory(reversed, MINT, primary, NOW).status, 'available');
-  for (const raw of [{}, { ...payload(), meta: {} }, { ...payload(), meta: { base: { address: MINT }, quote: { address: 'different' } } }]) {
+  for (const raw of [{}, { ...sourceShape(), meta: {} }, { ...sourceShape(), meta: { base: { address: MINT }, quote: { address: 'different' } } }]) {
     assert.throws(() => normalizeHistory(raw, MINT, primary, NOW), /Identitas|Pasangan/);
   }
-  assert.throws(() => normalizeHistory({ ...payload(), data: {} }, MINT, primary, NOW), /ohlcv_list/);
+  assert.throws(() => normalizeHistory({ ...sourceShape(), candles: undefined }, MINT, primary, NOW), /ohlcv_list/);
 });
 
-test('request publik meminta token eksplisit USD 15m, versi header, dan tidak mengikuti redirect', async () => {
+test('request candle 15m USD memakai token eksplisit, versi header, dan tidak mengikuti redirect', async () => {
   let observed;
-  const history = createHistoryProvider({ clock: () => NOW, fetcher: async (...args) => { observed = args; return reply(payload()); } });
+  const gecko = createGeckoSource({ minGapMs: 0, interactiveWaitMs: 0, clock: () => NOW, fetcher: async (url, options) => { observed = { url, options }; return reply(payload()); } });
+  const history = createHistoryProvider({ gecko, clock: () => NOW });
   const r = await history(MINT, primary);
   assert.equal(r.status, 'available');
   assert.equal(r.poolAddress, POOL);
   assert.equal(r.tokenAddress, MINT);
   assert.equal(r.fetchedAt, new Date(NOW).toISOString());
   assert.equal(r.historyCached, false);
-  const url = new URL(observed[0]);
+  const url = new URL(observed.url);
   assert.equal(url.origin, 'https://api.geckoterminal.com');
+  assert.equal(url.pathname, `/api/v2/networks/solana/pools/${POOL}/ohlcv/minute`);
   assert.equal(url.searchParams.get('token'), MINT);
   assert.equal(url.searchParams.get('aggregate'), '15');
   assert.equal(url.searchParams.get('include_empty_intervals'), 'true');
   assert.equal(url.searchParams.get('currency'), 'usd');
-  assert.equal(observed[1].headers.Accept, 'application/json;version=20230203');
-  assert.equal(observed[1].redirect, 'error');
+  assert.equal(observed.options.headers.Accept, 'application/json;version=20230203');
+  assert.equal(observed.options.redirect, 'error');
 });
 
 test('pool hilang/invalid tidak memicu jaringan dan tidak memilih fallback', async () => {
-  let calls = 0;
-  const history = createHistoryProvider({ fetcher: async () => { calls++; return reply(payload()); } });
+  const gecko = fakeGecko();
+  const history = createHistoryProvider({ gecko, clock: () => NOW });
   for (const p of [null, {}, { address: 'bad/../pool' }]) assert.equal((await history(MINT, p)).status, 'unknown');
-  assert.equal(calls, 0);
+  assert.equal(gecko.calls.length, 0);
 });
 
 test('cache candle 60 detik mempertahankan fetchedAt dan mengambil ulang setelah TTL', async () => {
   let now = NOW, calls = 0;
-  const history = createHistoryProvider({ clock: () => now, fetcher: async () => { calls++; return reply(payload(rows(now))); } });
+  const gecko = fakeGecko();
+  const original = gecko.candles.bind(gecko);
+  gecko.candles = async (...args) => { calls += 1; return original(...args); };
+  const history = createHistoryProvider({ gecko, clock: () => now });
   const first = await history(MINT, primary);
   now += 30000;
   const second = await history(MINT, primary);
@@ -79,7 +99,10 @@ test('cache candle 60 detik mempertahankan fetchedAt dan mengambil ulang setelah
 
 test('permintaan serentak untuk pool sama digabung', async () => {
   let calls = 0;
-  const history = createHistoryProvider({ clock: () => NOW, fetcher: async () => { calls++; return reply(payload()); } });
+  const gecko = fakeGecko();
+  const original = gecko.candles.bind(gecko);
+  gecko.candles = async (...args) => { calls += 1; return original(...args); };
+  const history = createHistoryProvider({ gecko, clock: () => NOW });
   const result = await Promise.all([history(MINT, primary), history(MINT, primary)]);
   assert.equal(calls, 1);
   assert.deepEqual(result[0], result[1]);
@@ -87,7 +110,8 @@ test('permintaan serentak untuk pool sama digabung', async () => {
 
 test('HTTP 429 memicu cooldown, tidak membuat sinyal atau fetchedAt palsu', async () => {
   let calls = 0, now = NOW;
-  const history = createHistoryProvider({ clock: () => now, fetcher: async () => { calls++; return new Response('limited', { status: 429 }); } });
+  const gecko = createGeckoSource({ minGapMs: 0, interactiveWaitMs: 0, clock: () => now, fetcher: async () => { calls += 1; return new Response('limited', { status: 429 }); } });
+  const history = createHistoryProvider({ gecko, clock: () => now });
   const first = await history(MINT, primary);
   assert.equal(first.status, 'unknown');
   assert.equal(first.fetchedAt, null);
@@ -100,19 +124,23 @@ test('HTTP 429 memicu cooldown, tidak membuat sinyal atau fetchedAt palsu', asyn
   assert.equal(calls, 2);
 });
 
-test('batas global candle 8 per menit terpisah dari cache scan', async () => {
+test('batas laju GeckoTerminal dipakai bersama, bukan dihitung per modul', async () => {
   let calls = 0;
-  const history = createHistoryProvider({ clock: () => NOW, fetcher: async () => { calls++; return reply(payload()); } });
-  for (let i = 0; i < 8; i++) await history(MINT, { ...primary, address: '1'.repeat(31) + String(i + 1) });
+  const gecko = createGeckoSource({ minGapMs: 0, interactiveWaitMs: 0, clock: () => NOW, fetcher: async () => { calls += 1; return reply(payload()); } });
+  const history = createHistoryProvider({ gecko, clock: () => NOW });
+  // Alamat pool harus base58 yang sah (tanpa '0', 'O', 'I', dan 'l').
+  const safe = 'ABCDEFGHJKLM';
+  for (let i = 0; i < 8; i += 1) await history(MINT, { ...primary, address: `${'1'.repeat(32)}${safe[i]}` });
   const r = await history(MINT, primary);
   assert.equal(r.status, 'unknown');
   assert.match(r.reason, /Batas lokal/);
-  assert.equal(calls, 8);
+  assert.equal(calls, 6);
 });
 
 test('error HTTP, timeout, JSON invalid, metadata hilang menjadi unknown bukan breakout', async () => {
   for (const fetcher of [async () => new Response('', { status: 404 }), async () => { throw new DOMException('timeout', 'TimeoutError'); }, async () => new Response('{'), async () => reply({ data: payload().data })]) {
-    const r = await createHistoryProvider({ clock: () => NOW, fetcher })(MINT, primary);
+    const gecko = createGeckoSource({ clock: () => NOW, fetcher });
+    const r = await createHistoryProvider({ gecko, clock: () => NOW })(MINT, primary);
     assert.equal(r.status, 'unknown');
     assert.equal(r.watch.state, 'unknown');
     assert.equal(r.fetchedAt, null);
@@ -122,7 +150,8 @@ test('error HTTP, timeout, JSON invalid, metadata hilang menjadi unknown bukan b
 test('riwayat stale/short/gap tetap unknown walau HTTP berhasil; fetchedAt bukan freshness candle', async () => {
   const variants = [rows(NOW - 3600000), rows().slice(-10), rows().filter((_, i) => i !== 5)];
   for (const data of variants) {
-    const r = await createHistoryProvider({ clock: () => NOW, fetcher: async () => reply(payload(data)) })(MINT, primary);
+    const gecko = fakeGecko({ data });
+    const r = await createHistoryProvider({ gecko, clock: () => NOW })(MINT, primary);
     assert.equal(r.status, 'unknown');
     assert.equal(r.watch.state, 'unknown');
     assert.equal(r.fetchedAt, new Date(NOW).toISOString());
@@ -138,8 +167,8 @@ test('konteks entry tidak menyulap teknikal tersedia menjadi token aman', () => 
 
 test('scan HTTP menggabungkan history dan entryContext, cache tidak menghapus timestamp sumber', async t => {
   let calls = 0;
-  const historyData = { ...normalizeHistory(payload(), MINT, primary, NOW), fetchedAt: new Date(NOW).toISOString() };
-  const server = createServer({ market: async () => ({ status: 'available', primary, pairs: [] }), risk: async () => ({ status: 'unknown' }), history: async (mint, p) => { assert.equal(mint, MINT); assert.equal(p.address, POOL); calls++; return historyData; } });
+  const historyData = { ...normalizeHistory(sourceShape(), MINT, primary, NOW), fetchedAt: new Date(NOW).toISOString() };
+  const server = createServer({ market: async () => ({ status: 'available', primary, pairs: [] }), risk: async () => ({ status: 'unknown' }), history: async (mint, p) => { assert.equal(mint, MINT); assert.equal(p.address, POOL); calls += 1; return historyData; } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const url = `http://127.0.0.1:${server.address().port}/api/scan?mint=${MINT}`;

@@ -71,6 +71,18 @@ export function createJobs({ concurrency = 2, ttlMs = 10 * 60_000, clock = Date.
       const job = jobs.get(id);
       return job ? { ...job, results: [...job.results] } : null;
     },
+    /**
+     * Batalkan job yang masih antre. Dipakai saat run discover baru dimulai:
+     * dua deep scan bersamaan akan saling memperebutkan kuota GeckoTerminal
+     * sehingga keduanya melambat.
+     */
+    cancel(id) {
+      const job = jobs.get(id);
+      if (!job || job.status === 'done') return false;
+      job.status = 'cancelled';
+      job.finishedAt = new Date(clock()).toISOString();
+      return true;
+    },
     size: () => jobs.size
   };
 }

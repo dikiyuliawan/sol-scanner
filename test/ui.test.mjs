@@ -130,3 +130,74 @@ test('UI label Balanced konsisten dengan gate usia pool 48 jam', () => {
   assert.match(html, /Balanced — likuid, pool ≥ 48 jam/);
   assert.doesNotMatch(html, /Klik satu baris/);
 });
+
+test('UI Discover dapat memaksa sampling baru lewat toggle refresh', async () => {
+  let requested = '';
+  const h = harness(async url => {
+    requested = url;
+    return { ok: true, json: async () => ({
+      rows: [], universe: { total: 0, checked: 0, evaluated: 0, accepted: 0, rejected: 0, sources: {} },
+      preset: { label: 'Balanced' }, configHash: 'abc123', warnings: [], jobId: null, jobTotal: 0
+    }) };
+  });
+  h.get('refresh-toggle').checked = true;
+  await h.get('discover-button').listeners.click();
+  assert.match(requested, /refresh=1/);
+});
+
+test('UI Inspect dapat memaksa sampling baru lewat toggle refresh', async () => {
+  let requested = '';
+  const h = harness(async url => {
+    requested = url;
+    return { ok: true, json: async () => ({
+      mint: 'mint-one', checkedAt: '2026-10-19T10:00:00Z', market: { status: 'available', pairs: [], primary: null }, history: { status: 'unknown', metrics: {}, candles: [] }, risk: { status: 'unknown', findings: [] }, entryContext: { cautions: [], reason: '' }
+    }) };
+  });
+  h.get('refresh-toggle').checked = true;
+  h.get('mint').value = 'mint-one';
+  await h.get('scan-form').listeners.submit({ preventDefault() {} });
+  assert.match(requested, /refresh=1/);
+});
+
+test('UI rincian kandidat menampilkan waktu pengambilan dan asal konsentrasi holder', () => {
+  const h = harness();
+  const now = new Date().toISOString();
+  const candidate = {
+    mint: 'mint-one', symbol: 'EX', rank: 1, score: 70, grade: 'C', confidence: 0.75,
+    market: { priceUsd: 1, change: {}, liquidityUsd: 200000, turnover: 1, marketCap: 2000000, ageHours: 72, source: 'DEX Screener', fetchedAt: now, targetIsBase: true },
+    safety: { top10Pct: 12.5, top10Source: 'Jupiter', top10Secondary: 65, fetchedAt: now },
+    structure: { lastClosedAt: now, close: 0.9 },
+    components: [], penalties: [], entryPlan: null
+  };
+  h.context.fixture = { rows: [candidate] };
+  h.run('discoverData = fixture; renderCandidates(discoverData)');
+  const table = h.get('candidates');
+  const detailButton = allElements(table).find(item => item.tagName === 'button' && item.textContent === 'Rincian');
+  detailButton.listeners.click({ stopPropagation() {} });
+  const detail = allElements(table).find(item => item.className === 'detail-row');
+  assert.ok(detail, 'baris rincian harus dibuat');
+  const text = detail.textContent;
+  assert.match(text, /Data pasar diambil/);
+  assert.match(text, /lalu|unknown/);
+  assert.match(text, /Jupiter/);
+  assert.match(text, /65.0%/);
+  assert.match(text, /GoPlus/);
+});
+
+test('UI menandai baris yang belum dianalisis sebagai antri dan menampilkan alasan kegagalan', () => {
+  const h = harness();
+  const base = { mint: 'mint-one', symbol: 'EX', rank: 1, score: 70, grade: 'B', confidence: 0.75, market: { priceUsd: 1, change: {}, liquidityUsd: 200000, turnover: 1, marketCap: 2000000, ageHours: 72 }, safety: { top10Pct: 10 }, components: [], penalties: [], entryPlan: null };
+  h.context.fixture = { rows: [{ ...base, deepState: 'antri' }, { ...base, mint: 'mint-two', deepState: 'gagal', deepReason: 'Gecko candle: HTTP 429' }] };
+  h.run('discoverData = fixture; renderCandidates(discoverData)');
+  const table = h.get('candidates');
+  const text = table.textContent;
+  assert.match(text, /antri/);
+  assert.match(text, /tidak dianalisis/);
+  assert.doesNotMatch(text, /pending/);
+
+  const failed = table.children.find(child => child.dataset.mint === 'mint-two');
+  const detailButton = allElements(failed).find(item => item.tagName === 'button' && item.textContent === 'Rincian');
+  detailButton.listeners.click({ stopPropagation() {} });
+  const detail = allElements(table).find(item => item.className === 'detail-row');
+  assert.match(detail.textContent, /HTTP 429/);
+});

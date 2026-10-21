@@ -65,6 +65,11 @@ export function createRiskProvider({ goplus = createGoPlusSource(), jupiter = cr
       });
     } else if (search.status !== 'available') {
       findings.push({ level: 'unknown', title: 'Audit Jupiter (pembanding)', reason: search.reason ?? 'Token tidak ada di daftar Jupiter saat ini.' });
+    } else {
+      // Jupiter tersedia tapi token ini tidak ada di daftar top organic:
+      // audit Jupiter memang tidak tersedia untuk mint ini, dan itu harus
+      // terlihat. Kehilangan audit bukan berarti auditnya bersih.
+      findings.push({ level: 'unknown', title: 'Audit Jupiter (pembanding)', reason: 'Token tidak ada di daftar top organic Jupiter saat ini, jadi audit Jupiter tidak tersedia untuk mint ini. Ketiadaan audit bukan tanda audit baik.' });
     }
 
     const critical = findings.filter(finding => finding.level === 'warning').length;
@@ -99,7 +104,11 @@ export function createRiskProvider({ goplus = createGoPlusSource(), jupiter = cr
   };
 }
 
-const defaultProvider = createRiskProvider();
+// Provider bawaan dibuat lazily supaya client baru lahir saat fetchRisk
+// benar-benar dipakai; server memakai createRiskProvider dengan sumber yang
+// sudah dipakai Discover agar cache dan batas laju tidak terhitung dua kali.
+let defaultProvider = null;
 export async function fetchRisk(mint) {
+  defaultProvider ??= createRiskProvider();
   return defaultProvider(mint);
 }

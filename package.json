@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
-    "backtest": "node backtest.mjs"
+    "backtest": "node backtest.mjs",
+    "diagnose": "node scripts/diagnose.mjs"
   }
 }

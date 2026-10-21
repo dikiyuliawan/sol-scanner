@@ -55,6 +55,7 @@ td small{display:block;color:var(--muted);font-size:10px;font-family:ui-monospac
 .score{display:inline-flex;align-items:baseline;gap:5px;padding:4px 9px;border-radius:7px;border:1px solid var(--line);background:#0d151b}
 .score strong{font-size:14px}
 .score span{font-size:10px;color:var(--muted);letter-spacing:.6px}
+.score small{font-size:9px;color:var(--muted);letter-spacing:.3px;opacity:.8}
 .grade-a{border-color:#3f7a5c;background:#0f2018}
 .grade-a span{color:var(--up)}
 .grade-b{border-color:#3d6070;background:#0e1a21}
@@ -69,6 +70,9 @@ td small{display:block;color:var(--muted);font-size:10px;font-family:ui-monospac
 tr.disqualified{opacity:.6}
 .detail-row>td{background:#0c141a;padding:18px 16px}
 .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:26px}
+.detail-freshness{margin-bottom:10px}
+.checkbox{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);white-space:nowrap}
+.checkbox input{accent-color:var(--accent)}
 .component{display:grid;grid-template-columns:1fr 90px 34px;align-items:center;gap:10px;margin-bottom:9px;font-size:12px}
 .component span{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .component strong{text-align:right;font-variant-numeric:tabular-nums}

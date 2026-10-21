@@ -86,9 +86,14 @@ let discoverData = null;
 let jobTimer = null;
 let jobGeneration = 0;
 const openDetails = new Set();
-function scoreBadge(score, grade) {
+function scoreBadge(score, grade, confidence) {
   const el = node('div', undefined, `score grade-${(grade || 'unknown').toLowerCase()}`);
   el.append(node('strong', score === null ? '—' : String(score)), node('span', grade ?? 'unknown'));
+  if (typeof confidence === 'number') {
+    // Porsi bobot yang benar-benar terukur: skor dari 75% bobot tidak
+    // boleh dibaca sama dengan skor dari 100%.
+    el.append(node('small', `bobot ${Math.round(confidence * 100)}%`));
+  }
   return el;
 }
 
@@ -98,11 +103,64 @@ function changeCell(value) {
   return el;
 }
 
+/** Umur sebuah timestamp: berapa lama angka itu sudah ada di layar. */
+function ageOf(timestamp) {
+  if (!timestamp) return 'unknown';
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) return 'unknown';
+  const seconds = Math.max(0, (Date.now() - parsed) / 1000);
+  if (seconds < 90) return `${Math.round(seconds)} detik lalu`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} menit lalu`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)} jam lalu`;
+  return `${Math.round(seconds / 86400)} hari lalu`;
+}
+
+/**
+ * Panel usia data: setiap angka di tampilan punya waktu pengambilan, dan
+ * waktu itu harus terlihat. Angka tanpa waktu tidak boleh dibaca sebagai
+ * harga terkini.
+ */
+function freshnessPanel(row) {
+  const box = node('div', undefined, 'detail-freshness');
+  const add = (label, value) => {
+    const line = node('div', undefined, 'kv');
+    line.append(node('span', label), node('strong', value));
+    box.append(line);
+  };
+  add('Data pasar diambil', row.market?.fetchedAt ? `${ageOf(row.market.fetchedAt)} (${new Date(row.market.fetchedAt).toLocaleString('id-ID')})` : 'unknown');
+  add('Sumber data pasar', row.market?.source ?? 'unknown');
+  if (row.market?.targetIsBase === false) add('Orientasi pool', 'mint adalah token QUOTE: harga dan valuasi milik token base, jadi tidak ditampilkan');
+  if (row.poolCheck) {
+    add('Pemeriksaan ulang pool', row.poolCheck.replaced
+      ? `Pool diganti dengan pool utama provider (${row.poolCheck.reason ?? 'pool lain lebih likuid'})`
+      : row.poolCheck.reason ?? 'Pool utama provider sama dengan pool pada ranking');
+  }
+  add('Data keamanan diambil', row.safety?.fetchedAt ? ageOf(row.safety.fetchedAt) : 'GoPlus belum dipanggil untuk kandidat ini');
+  if (row.structure?.lastClosedAt) {
+    add('Candle 1 jam ditutup', `${ageOf(row.structure.lastClosedAt)} (${new Date(row.structure.lastClosedAt).toLocaleString('id-ID')})`);
+  }
+  if (row.structure?.close !== null && row.structure?.close !== undefined) {
+    add('Close yang dipakai struktur', usd(row.structure.close));
+  }
+  if (row.candleSource?.fetchedAt) add('Candle diambil', ageOf(row.candleSource.fetchedAt));
+  // Alasan kegagalan candle harus terlihat: batas laju provider berbeda
+  // dari "tidak ada data pasar".
+  if (row.candleSource?.reason) add('Alasan candle', row.candleSource.reason);
+  if (row.deepReason) add('Alasan deep scan', row.deepReason);
+  return box;
+}
+
 function renderCandidates(data) {
   const tbody = $('candidates');
   tbody.replaceChildren();
   if (!data.rows.length) {
-    const row = node('tr'), cell = node('td', 'Tidak ada kandidat yang lolos gate pada preset ini. Longgarkan preset atau tunggu kondisi pasar berubah.');
+    const row = node('tr');
+    // Dua sebab yang berbeda harus dibaca berbeda: sumber data gagal,
+    // atau memang tidak ada kandidat yang lolos gate.
+    const message = data.universe?.total === 0
+      ? 'Tidak ada kandidat yang bisa dinilai: tidak satu pun sumber data mengembalikan token. Lihat peringatan di atas — ini biasanya koneksi ke penyedia yang gagal (proxy/VPN/DNS menahan domain) atau batas laju, bukan pasar yang sepi. Jalankan Discover lagi setelah beberapa saat.'
+      : 'Tidak ada kandidat yang lolos gate pada preset ini. Longgarkan preset atau tunggu kondisi pasar berubah.';
+    const cell = node('td', message);
     cell.colSpan = 13; row.append(cell); tbody.append(row);
     return;
   }
@@ -113,7 +171,7 @@ function renderCandidates(data) {
     const token = node('td', undefined, 'token-cell');
     token.append(node('strong', row.symbol ?? 'unknown'), node('small', row.mint));
     tr.append(token);
-    const score = node('td'); score.append(scoreBadge(row.score, row.grade)); tr.append(score);
+    const score = node('td'); score.append(scoreBadge(row.score, row.grade, row.confidence)); tr.append(score);
     tr.append(node('td', usd(row.market.priceUsd)));
     tr.append(changeCell(row.market.change?.h1));
     tr.append(changeCell(row.market.change?.h24));
@@ -127,8 +185,14 @@ function renderCandidates(data) {
       setup.append(node('span', `gugur: ${gateShort(row.disqualified[0].code)}`, 'chip chip-bad'));
       tr.classList.add('disqualified');
     } else {
-      const state = row.entryPlan?.setup ?? row.structure?.trend ?? 'pending';
-      setup.append(node('span', state, `chip ${row.entryPlan?.status === 'plan' ? 'chip-ok' : 'chip-muted'}`));
+      // Tiga keadaan yang berbeda: sudah dianalisis, masih antri, atau gagal
+      // dianalisis. "pending" lama membuat baris terlihat sedang berubah
+      // padahal tidak ada yang menganalisisnya.
+      const state = row.deepState === 'gagal' ? 'tidak dianalisis'
+        : row.deepState === 'antri' ? 'antri'
+          : (row.entryPlan?.setup ?? row.structure?.trend ?? 'tidak dianalisis');
+      const ok = row.deepState !== 'antri' && row.deepState !== 'gagal' && row.entryPlan?.status === 'plan';
+      setup.append(node('span', state, `chip ${ok ? 'chip-ok' : 'chip-muted'}`));
     }
     tr.append(setup);
     const action = node('td');
@@ -185,6 +249,18 @@ function toggleDetail(tr, row, restore = false) {
   table.append(tb);
   evidence.append(table);
 
+  const freshness = node('div');
+  freshness.append(node('h4', 'Waktu dan asal data'));
+  freshness.append(freshnessPanel(row));
+  const concentration = node('p', undefined, 'hint');
+  const top10 = row.safety?.top10Pct;
+  const secondary = row.safety?.top10Secondary;
+  concentration.textContent = row.safety?.top10Source
+    ? `Top 10 holder memakai angka ${row.safety.top10Source} (${pct(top10)}).${secondary !== null && secondary !== undefined ? ` GoPlus membaca ${pct(secondary)} dengan definisi holder berbeda (termasuk wallet exchange/program); angka ini ditampilkan, bukan dipakai sebagai sumber gate.` : ''}`
+    : 'Konsentrasi top 10 belum terukur dari sumber mana pun.';
+  freshness.append(concentration);
+  evidence.append(freshness);
+
   const plan = node('div');
   plan.append(node('h4', 'Rencana entry 1 jam'));
   if (row.disqualified?.length) {
@@ -230,7 +306,8 @@ function toggleDetail(tr, row, restore = false) {
 function renderDiscover(data) {
   discoverData = data;
   $('discover-results').hidden = false;
-  $('discover-meta').textContent = `${data.preset.label} · config ${data.configHash}`;
+  const runTime = data.finishedAt ? ` · diambil ${ageOf(data.finishedAt)}` : '';
+  $('discover-meta').textContent = `${data.preset.label} · config ${data.configHash}${runTime}${data.cached ? ' · cache ≤ 60 detik' : ''}${data.refreshed ? ' · data disegarkan' : ''}`;
   const values = [
     ['Universe', `${data.universe.total} token`], ['Dievaluasi (punya pool)', String(data.universe.evaluated ?? data.universe.checked)],
     ['Lolos gate', String(data.universe.accepted)], ['Digugurkan', String(data.universe.rejected)],
@@ -238,6 +315,15 @@ function renderDiscover(data) {
   ];
   $('discover-summary').replaceChildren(...values.map(([label, value]) => { const el = node('div', undefined, 'metric'); el.append(node('p', label), node('strong', value)); return el; }));
   findings($('discover-warnings'), data.warnings.map(reason => ({ level: 'unknown', title: 'Sumber data', reason })));
+
+  // Kontribusi per sumber: sumber yang tidak berkontribusi harus terlihat,
+  // bukan tercampur dalam satu angka universe.
+  const sources = data.universe?.sources ?? {};
+  const sourceNote = node('p', undefined, 'hint');
+  sourceNote.textContent = Object.keys(sources).length
+    ? `Kandidat yang dievaluasi per sumber — ${Object.entries(sources).map(([label, count]) => `${label}: ${count}`).join(' · ')}.`
+    : 'Kandidat yang dievaluasi per sumber: unknown.';
+  $('discover-summary').append(sourceNote);
 
   renderCandidates(data);
 
@@ -255,13 +341,19 @@ function renderDiscover(data) {
   }
 
   $('deep-status').textContent = data.jobId ? `deep scan: 0/${data.jobTotal}` : 'deep scan: tidak ada';
+  // Semua baris masuk antrean deep scan: baris yang belum dianalisis
+  // ditandai "antri", bukan "pending" yang terlihat seperti sedang berubah.
+  for (const row of data.rows) row.deepState = data.jobId ? 'antri' : 'tidak dianalisis';
   if (data.jobId) pollJob(data.jobId, data.jobTotal);
 }
 
 function pollJob(jobId, total) {
   clearTimeout(jobTimer);
   const generation = ++jobGeneration;
-  const deadline = Date.now() + 90_000;
+  // Deep scan mencakup semua baris dan diberi tempo (satu token setiap
+  // ~13 detik karena batas publik GeckoTerminal), jadi satu run bisa
+  // memakan beberapa menit. Batas poll disesuaikan dengan itu.
+  const deadline = Date.now() + 8 * 60_000;
   const tick = async () => {
     let job;
     try {
@@ -276,10 +368,20 @@ function pollJob(jobId, total) {
     }
     if (generation !== jobGeneration || !discoverData) return;
     $('deep-status').textContent = `deep scan: ${job.completed}/${total}${job.failures ? ` · ${job.failures} gagal` : ''}`;
+    const done = new Set();
     for (const result of job.results) {
-      if (!result.ok || !discoverData) continue;
+      if (!discoverData) continue;
       const row = discoverData.rows.find(item => item.mint === result.mint);
       if (!row) continue;
+      done.add(result.mint);
+      if (!result.ok) {
+        // Gagal dianalisis: alasannya ditampilkan, bukan disembunyikan di
+        // balik label generik.
+        row.deepState = 'gagal';
+        row.deepReason = result.reason ?? 'Deep scan gagal.';
+        continue;
+      }
+      row.deepState = 'analisis';
       row.score = result.result.score;
       row.grade = result.result.grade;
       row.confidence = result.result.confidence;
@@ -289,6 +391,15 @@ function pollJob(jobId, total) {
       row.structure = result.result.structure;
       row.entryPlan = result.result.entryPlan;
       row.disqualified = result.result.disqualified ?? null;
+      // Data pasar dan waktu pengambilan candle ikut diperbarui: hasil
+      // deep scan boleh memakai pool yang berbeda dari ranking awal.
+      if (result.result.market) row.market = { ...row.market, ...result.result.market };
+      if (result.result.candleSource) row.candleSource = result.result.candleSource;
+      if (result.result.poolCheck) row.poolCheck = result.result.poolCheck;
+    }
+    // Baris yang belum selesai diantre, dan itu harus terlihat.
+    for (const row of discoverData.rows) {
+      if (row.deepState !== 'gagal' && !done.has(row.mint)) row.deepState = 'antri';
     }
     // Perbarui seluruh bukti, setup, dan status gugur pada setiap progres;
     // kandidat gugur tidak boleh dipromosikan oleh skor tingginya.
@@ -308,6 +419,7 @@ function pollJob(jobId, total) {
 
 $('discover-button').addEventListener('click', async () => {
   const preset = $('preset').value;
+  const refresh = $('refresh-toggle')?.checked === true;
   clearTimeout(jobTimer);
   jobGeneration++;
   discoverData = null;
@@ -315,13 +427,17 @@ $('discover-button').addEventListener('click', async () => {
   $('discover-button').disabled = true;
   $('discover-results').hidden = true;
   $('discover-status').className = '';
-  $('discover-status').textContent = 'Mengambil universe, menyaring gate, dan memeringkat kandidat… Deep scan shortlist berjalan setelah hasil awal.';
+  $('discover-status').textContent = refresh
+    ? 'Mengambil data baru (cache dilewati)… Deep scan shortlist berjalan setelah hasil awal.'
+    : 'Mengambil universe, menyaring gate, dan memeringkat kandidat… Deep scan shortlist berjalan setelah hasil awal.';
   try {
-    const response = await fetch(`/api/discover?preset=${encodeURIComponent(preset)}`, { signal: AbortSignal.timeout(90000), cache: 'no-store' });
+    const response = await fetch(`/api/discover?preset=${encodeURIComponent(preset)}${refresh ? '&refresh=1' : ''}`, { signal: AbortSignal.timeout(90000), cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     renderDiscover(data);
-    $('discover-status').textContent = `Selesai · ${data.universe.accepted} lolos gate dari ${data.universe.evaluated ?? data.universe.checked} dievaluasi · ${data.rows.length} kandidat tampil${data.jobId ? ' · deep scan berjalan' : ''}.`;
+    $('discover-status').textContent = data.universe?.total === 0
+      ? `Selesai · tidak ada sumber data yang bisa dibaca (${data.warnings.length} peringatan di atas) · bukan berarti pasar sepi.`
+      : `Selesai · ${data.universe.accepted} lolos gate dari ${data.universe.evaluated ?? data.universe.checked} dievaluasi · ${data.rows.length} kandidat tampil${data.jobId ? ' · deep scan berjalan' : ''}.`;
   } catch (error) {
     $('discover-status').className = 'error';
     $('discover-status').textContent = `Discover gagal: ${error.name === 'TimeoutError' ? 'batas waktu tercapai' : error.message}. Tidak ada hasil lama yang ditampilkan.`;
@@ -379,7 +495,7 @@ function render(data) {
   $('add-watch').disabled = false;
   $('token-name').textContent = primary ? `${primary.tokenName || 'Token'}${primary.tokenSymbol ? ` / ${primary.tokenSymbol}` : ''}` : 'Token belum teridentifikasi';
   $('token-mint').textContent = data.mint;
-  $('timestamp').textContent = `Snapshot diterima ${new Date(data.checkedAt).toLocaleString('id-ID')} · ${data.cached ? 'cache ≤ 30 detik' : 'scan baru'}`;
+  $('timestamp').textContent = `Snapshot diterima ${new Date(data.checkedAt).toLocaleString('id-ID')} (${ageOf(data.checkedAt)}) · ${data.cached ? 'cache ≤ 30 detik' : 'scan baru'}${data.refreshed ? ' · data disegarkan' : ''}${data.market?.fetchedAt ? ` · data pasar ${ageOf(data.market.fetchedAt)}` : ''}`;
   $('market-status').textContent = `pasar: ${market.status}`;
   renderHistory(data);
   const metrics = [
@@ -413,13 +529,14 @@ $('example').addEventListener('click', () => { $('mint').value = 'So111111111111
 $('scan-form').addEventListener('submit', async event => {
   event.preventDefault();
   const mint = $('mint').value.trim();
+  const refresh = $('refresh-toggle')?.checked === true;
   $('status').className = '';
   $('status').textContent = 'Memeriksa sumber data… Tidak ada transaksi yang dikirim.';
   displayedHistory = null;
   $('results').hidden = true;
   $('scan-button').disabled = true; $('example').disabled = true; $('mint').disabled = true;
   try {
-    const response = await fetch(`/api/scan?mint=${encodeURIComponent(mint)}`, { signal: AbortSignal.timeout(30000), cache: 'no-store' });
+    const response = await fetch(`/api/scan?mint=${encodeURIComponent(mint)}${refresh ? '&refresh=1' : ''}`, { signal: AbortSignal.timeout(30000), cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     render(data);

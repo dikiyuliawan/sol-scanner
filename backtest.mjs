@@ -62,7 +62,7 @@ export function pairReturns(records, { horizons = DEFAULT_HORIZONS } = {}) {
     const at = Date.parse(record.takenAt);
     if (!Number.isFinite(at)) continue;
     if (!byMint.has(record.mint)) byMint.set(record.mint, []);
-    byMint.get(record.mint).push({ at, price, score: record.score ?? null, grade: record.grade ?? null });
+    byMint.get(record.mint).push({ at, price, score: record.score ?? null, grade: record.grade ?? null, scoreStage: record.scoreStage ?? 'initial' });
   }
 
   const observations = [];
@@ -81,6 +81,7 @@ export function pairReturns(records, { horizons = DEFAULT_HORIZONS } = {}) {
         horizon,
         grade: entry.grade,
         score: entry.score,
+        scoreStage: entry.scoreStage,
         entryPrice: entry.price,
         exitPrice: exit.price,
         elapsedHours: (exit.at - entry.at) / 3_600_000,
@@ -94,21 +95,22 @@ export function pairReturns(records, { horizons = DEFAULT_HORIZONS } = {}) {
 export function summarize(observations, { minReturnPct = 10 } = {}) {
   const buckets = new Map();
   for (const item of observations) {
-    const key = `${item.horizon}|${item.grade ?? 'unknown'}`;
-    if (!buckets.has(key)) buckets.set(key, { horizon: item.horizon, grade: item.grade ?? 'unknown', returns: [] });
+    const key = `${item.horizon}|${item.grade ?? 'unknown'}|${item.scoreStage ?? 'initial'}`;
+    if (!buckets.has(key)) buckets.set(key, { horizon: item.horizon, grade: item.grade ?? 'unknown', scoreStage: item.scoreStage ?? 'initial', returns: [] });
     buckets.get(key).returns.push(item.returnPct);
   }
   return [...buckets.values()]
     .map(bucket => ({
       horizon: bucket.horizon,
       grade: bucket.grade,
+      scoreStage: bucket.scoreStage,
       count: bucket.returns.length,
       medianReturnPct: round(median(bucket.returns)),
       meanReturnPct: round(bucket.returns.reduce((sum, value) => sum + value, 0) / bucket.returns.length),
       winRatePct: round((bucket.returns.filter(value => value > 0).length / bucket.returns.length) * 100),
       hitRatePct: round((bucket.returns.filter(value => value >= minReturnPct).length / bucket.returns.length) * 100)
     }))
-    .sort((a, b) => a.horizon - b.horizon || a.grade.localeCompare(b.grade));
+    .sort((a, b) => a.horizon - b.horizon || a.grade.localeCompare(b.grade) || a.scoreStage.localeCompare(b.scoreStage));
 }
 
 function round(value) {
@@ -128,14 +130,15 @@ function printReport({ records, result, summary, args, source }) {
     console.log('Belum ada pasangan snapshot yang cukup. Jalankan discovery beberapa kali');
     console.log('dengan jarak minimal sepanjang horizon, lalu ulangi perintah ini.');
   } else {
-    console.log('horizon | grade | n | median % | mean % | win % | hit %');
-    console.log('--------|-------|---|----------|--------|-------|------');
+    console.log('horizon | grade | tahap skor | n | median % | mean % | win % | hit %');
+    console.log('--------|-------|------------|---|----------|--------|-------|------');
     for (const row of summary) {
-      console.log(`${String(row.horizon).padStart(6)}h | ${row.grade.padEnd(5)} | ${String(row.count).padStart(1)} | ${String(row.medianReturnPct).padStart(8)} | ${String(row.meanReturnPct).padStart(6)} | ${String(row.winRatePct).padStart(5)} | ${String(row.hitRatePct).padStart(4)}`);
+      console.log(`${String(row.horizon).padStart(6)}h | ${row.grade.padEnd(5)} | ${(row.scoreStage ?? 'initial').padEnd(10)} | ${String(row.count).padStart(1)} | ${String(row.medianReturnPct).padStart(8)} | ${String(row.meanReturnPct).padStart(6)} | ${String(row.winRatePct).padStart(5)} | ${String(row.hitRatePct).padStart(4)}`);
     }
   }
   console.log('');
   console.log('Batas yang harus dibaca bersama angka di atas:');
+  console.log('- Tahap skor: "deep" = skor final setelah deep scan (struktur 1 jam dan GoPlus), "initial" = skor ranking awal yang belum dianalisis struktur. Campuran keduanya tidak sebanding; lihat kolom tahap skor.');
   console.log('- Jarak snapshot tidak seragam; return diukur pada snapshot pertama yang mencapai horizon, bukan tepat di horizon.');
   console.log('- Tidak ada biaya transaksi, slippage, atau penalti pajak.');
   console.log('- Kandidat yang tidak dicatat ulang tetap hilang (bias seleksi: token yang terus menarik perhatian lebih sering tercatat).');

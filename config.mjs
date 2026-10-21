@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const CONFIG_VERSION = '2026-10-19.3';
+export const CONFIG_VERSION = '2026-10-20.1';
 
 /**
  * Preset hanya mengubah angka, bukan kode. Semua ambang di sini adalah
@@ -73,23 +73,53 @@ export const SCORE_WEIGHTS = {
 };
 
 export const LIMITS = {
-  jupiter: { perMinute: 30, ttlMs: 60_000, max: 30 },
+  // Batas publik Jupiter yang terukur: burst beberapa request memicu 429,
+  // jadi batas lokal disetel konservatif.
+  jupiter: { perMinute: 15, ttlMs: 60_000, max: 30 },
   dexscreener: { perMinute: 30, ttlMs: 30_000, max: 120, batchSize: 30 },
-  gecko: { perMinute: 8, ttlMs: 300_000, max: 200 },
-  goplus: { perMinute: 20, ttlMs: 600_000, max: 200, minGapMs: 300 }
+  // Batas GeckoTerminal publik yang terukur dari jaringan pengembangan:
+  // ~4-5 request per menit aman, burst 3 request sudah memicu 429, dan
+  // header Retry-After-nya bernilai "0" sehingga tidak bisa dipakai
+  // sendiri. Karena itu: batas lokal 6/menit, jarak minimum antar
+  // request 10 detik, dan cooldown minimum 30 detik saat 429.
+  gecko: { perMinute: 6, ttlMs: 60_000, max: 200, minGapMs: 10_000, interactiveReserve: 1 },
+  // Record GoPlus boleh berumur 5 menit, tetapi hasil negatif (mint belum
+  // diindeks) tidak pernah di-cache.
+  goplus: { perMinute: 20, ttlMs: 300_000, max: 200, minGapMs: 300, interactiveReserve: 4 }
 };
 
 export const DISCOVERY = {
   universeLimit: 100,
   maxCandidatesForMarket: 60,
   resultLimit: 20,
-  deepScanTokens: 4,
+  // 0 = semua baris yang lolos gate ikut di-deep-scan. Job berjalan di
+  // belakang dan diberi tempo, jadi tidak menambah waktu tunggu respons.
+  deepScanTokens: 0,
   deepConcurrency: 1,
-  // Preset yang mewajibkan keamanan (allowUnknownSafety:false) memverifikasi
-  // kandidat teratas lewat GoPlus sebelum gate final. Terbatas agar tetap
-  // di bawah batas laju GoPlus (20/menit, jarak 300 ms).
-  verifySafetyTop: 10,
-  runHistory: 20
+  // Kandidat yang tidak punya data holder Jupiter (mis. dari GeckoTerminal)
+  // diverifikasi lewat GoPlus, karena tanpa jumlah holder gate akan
+  // menolaknya sebagai unknown.
+  verifySafetyTop: 12,
+  verifyHolderTop: 10,
+  runHistory: 20,
+  // Daftar ranking Jupiter bergerak lambat: refresh berturut-turut selalu
+  // menghasilkan token yang sama. Jendela 10 menit + pergeseran terjadwal
+  // membuat tiap refresh mengambil potongan berbeda dari daftar yang sama.
+  rotateWindowMs: 600_000,
+  rotateStep: 37,
+  // Lima posisi teratas tiap daftar tidak digeser supaya kandidat terbaik
+  // tidak hilang dari run; sisanya bergeser setiap jendela.
+  rotateHeadFixed: 5,
+  // Tempo antar token pada deep scan. 10 detik ≈ 6 permintaan Gecko per
+  // menit, di bawah batas publik yang terukur (~4-5 per menit).
+  deepScanPaceMs: 10_000,
+  // Pool baru GeckoTerminal hanya diambil kalau preset memang menerima
+  // likuiditas tipis; untuk preset lain satu request itu terbuang.
+  newPoolsMaxMinLiquidityUsd: 60_000,
+  // Porsi kuota GeckoTerminal yang dicadangkan untuk permintaan interaktif
+  // (tab Inspect) supaya deep scan_background tidak membuat Inspect kehabisan
+  // kuota.
+  interactiveReserve: 2
 };
 
 export const ENTRY = {

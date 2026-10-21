@@ -1,5 +1,6 @@
 import { EXCLUDED_MINTS, EXCLUDED_TAGS } from '../config.mjs';
 import { labelRank } from '../sources/jupiter.mjs';
+import { concentrationFor, secondaryConcentration } from './provenance.mjs';
 
 const SEVERITY_ORDER = { reject: 0, warn: 1, info: 2 };
 
@@ -42,9 +43,13 @@ export function evaluateGates(candidate, preset) {
     check(rejections, 'turnover_high', turnover === null || turnover <= preset.maxTurnover,
       `Turnover 24 jam ${turnover === null ? 'unknown' : `${turnover.toFixed(2)}x`} di atas ambang ${preset.maxTurnover}x; volume dicurigai wash/turnover ekstrem.`);
 
-    if (pool.marketCap !== null) {
+    if (pool.marketCap !== null && pool.marketCap !== undefined) {
       check(rejections, 'mcap_low', pool.marketCap >= preset.minMarketCapUsd,
         `Market cap USD ${pool.marketCap} di bawah ambang ${preset.minMarketCapUsd}.`);
+    } else {
+      // Gate market cap tidak bisa dihitung. Ini dicatat sebagai peringatan,
+      // bukan lolos diam-diam: ambang pasar minimum tidak dievaluasi.
+      warnings.push({ code: 'mcap_unknown', severity: 'warn', reason: 'Market cap tidak dilaporkan sumber untuk pool ini; gate market cap tidak dievaluasi. Unknown bukan berarti cukup.' });
     }
     if (pool.marketCap && pool.fdv) {
       const ratio = pool.fdv / pool.marketCap;
@@ -63,9 +68,20 @@ export function evaluateGates(candidate, preset) {
   check(rejections, 'holders_low', holderCount !== null && holderCount >= preset.minHolderCount,
     `Jumlah holder ${holderCount ?? 'unknown'} di bawah ambang ${preset.minHolderCount}.`);
 
-  const top10 = safety?.security?.top10Pct ?? audit?.topHoldersPercentage ?? null;
-  check(rejections, 'concentration_high', top10 !== null && top10 <= preset.maxTop10Pct,
-    `Top 10 holder ${top10 === null ? 'unknown' : `${top10.toFixed(1)}%`} melewati ambang ${preset.maxTop10Pct}%.`);
+  const concentration = concentrationFor(candidate);
+  check(rejections, 'concentration_high', concentration.value !== null && concentration.value <= preset.maxTop10Pct,
+    `Top 10 holder ${concentration.value === null ? 'unknown' : `${concentration.value.toFixed(1)}%`} (${concentration.source ?? 'sumber tidak diketahui'}) melewati ambang ${preset.maxTop10Pct}%.`);
+  // Pembaca kedua dari sumber lain ditampilkan sebagai peringatan, bukan
+  // sebagai sumber gate: definisi holder keduanya berbeda dan tidak boleh
+  // diperlakukan sebagai angka yang sama.
+  const secondary = secondaryConcentration(candidate);
+  if (secondary && secondary.value > preset.maxTop10Pct) {
+    warnings.push({
+      code: 'concentration_goplus_high',
+      severity: 'warn',
+      reason: `Top 10 menurut GoPlus ${secondary.value.toFixed(1)}% (termasuk wallet exchange/program) melewati ambang ${preset.maxTop10Pct}%. Gate memakai angka ${concentration.source} ${concentration.value.toFixed(1)}% yang memakai definisi holder lebih sempit. Selisih ini adalah perbedaan definisi, bukan bukti aman.`
+    });
+  }
 
   // Explicit hazards always reject; missing controls remain unknown even when
   // GoPlus returned a partial token record.

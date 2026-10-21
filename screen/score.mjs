@@ -1,6 +1,13 @@
 import { GRADE_THRESHOLDS, SCORE_WEIGHTS } from '../config.mjs';
+import { concentrationFor, secondaryConcentration } from './provenance.mjs';
 
 const clamp = (value, min = 0, max = 100) => Math.min(max, Math.max(min, value));
+
+/** Gabungkan label sumber yang berbeda untuk satu metrik. */
+function combineSources(...values) {
+  const set = new Set(values.filter(value => typeof value === 'string' && value));
+  return set.size ? [...set].join(' / ') : 'unknown';
+}
 
 /** Interpolasi linear: x <= lo → 0, x >= hi → 100. */
 function ramp(value, lo, hi) {
@@ -51,8 +58,13 @@ export function scoreSafety(candidate) {
   if (mintable === true) score -= 100;
   if (freezable === true) score -= 100;
 
-  const top10 = s?.top10Pct ?? audit?.topHoldersPercentage ?? null;
-  evidence.push({ metric: 'Top 10 holder', value: top10 === null ? 'unknown' : `${top10.toFixed(1)}%`, source: s?.top10Pct !== undefined ? 'GoPlus' : 'Jupiter' });
+  const top10Reading = concentrationFor(candidate);
+  const top10 = top10Reading.value;
+  evidence.push({ metric: 'Top 10 holder', value: top10 === null ? 'unknown' : `${top10.toFixed(1)}%`, source: top10Reading.source ?? 'Jupiter/GoPlus (tidak diketahui)' });
+  const secondary = secondaryConcentration(candidate);
+  if (secondary) {
+    evidence.push({ metric: 'Top 10 holder (pembaca kedua)', value: `${secondary.value.toFixed(1)}%`, source: 'GoPlus (termasuk wallet exchange/program)' });
+  }
   const concentration = top10 === null ? null : ramp(60 - top10, 0, 50);
   if (concentration !== null) score -= (100 - concentration) * 0.5;
   else score -= 20;
@@ -82,16 +94,17 @@ export function scoreLiquidity(candidate, preset) {
   const pool = candidate.market?.pool;
   if (!pool) return component('liquidity', 'Likuiditas & eksekusi', SCORE_WEIGHTS.liquidity, null, [], 'Pool tidak tersedia.');
   const evidence = [];
+  const poolSource = pool.source ?? 'DEX Screener';
   // Kurva relatif preset: likuiditas dianggap "penuh" pada 20x ambang minimum
   // preset, sehingga preset yang lebih longgar menilai token yang sama lebih
   // tinggi. Sebelumnya patokan atas dikunci di USD 5 juta untuk semua preset,
   // sehingga skor nyaris tidak berubah antar-preset.
   const liqScore = ramp(pool.liquidityUsd, preset.minLiquidityUsd, preset.minLiquidityUsd * 20);
-  evidence.push({ metric: 'Likuiditas pool', value: pool.liquidityUsd === null ? 'unknown' : `$${Math.round(pool.liquidityUsd).toLocaleString('en-US')}`, source: 'DEX Screener' });
+  evidence.push({ metric: 'Likuiditas pool', value: pool.liquidityUsd === null ? 'unknown' : `$${Math.round(pool.liquidityUsd).toLocaleString('en-US')}`, source: poolSource });
 
   const turnover = pool.liquidityUsd && pool.volume?.h24 ? pool.volume.h24 / pool.liquidityUsd : null;
   const turnoverScore = band(turnover, preset.minTurnover, 0.5, 4, preset.maxTurnover);
-  evidence.push({ metric: 'Turnover 24 jam', value: turnover === null ? 'unknown' : `${turnover.toFixed(2)}x`, source: 'DEX Screener' });
+  evidence.push({ metric: 'Turnover 24 jam', value: turnover === null ? 'unknown' : `${turnover.toFixed(2)}x`, source: poolSource });
 
   const slippage = estimateSlippage(pool.liquidityUsd, candidate.notionalUsd ?? 500);
   const slippageScore = slippage === null ? null : ramp(5 - slippage, 0, 4.5);
@@ -113,10 +126,20 @@ export function scoreMomentum(candidate) {
   const stats = candidate.jupiter?.stats ?? {};
   if (!pool) return component('momentum', 'Momentum & akselerasi volume', SCORE_WEIGHTS.momentum, null, [], 'Pool tidak tersedia.');
   const evidence = [];
+  const poolSource = pool.source ?? 'DEX Screener';
   const change1h = pool.change?.h1 ?? stats['1h']?.priceChange ?? null;
   const change6h = pool.change?.h6 ?? stats['6h']?.priceChange ?? null;
   const change24h = pool.change?.h24 ?? stats['24h']?.priceChange ?? null;
-  evidence.push({ metric: 'Perubahan 1j / 6j / 24j', value: `${signedPct(change1h)} / ${signedPct(change6h)} / ${signedPct(change24h)}`, source: 'DEX Screener' });
+  // Setiap perubahan bisa berasal dari pool DEX Screener atau dari statistik
+  // Jupiter; label sumber harus menyebut keduanya, bukan menebak satu.
+  const sourceOf = (poolValue, jupiterValue) => poolValue !== null && poolValue !== undefined
+    ? (pool.source ?? 'DEX Screener')
+    : (jupiterValue !== null && jupiterValue !== undefined ? 'Jupiter' : null);
+  evidence.push({
+    metric: 'Perubahan 1j / 6j / 24j',
+    value: `${signedPct(change1h)} / ${signedPct(change6h)} / ${signedPct(change24h)}`,
+    source: combineSources(sourceOf(pool.change?.h1, stats['1h']?.priceChange), sourceOf(pool.change?.h6, stats['6h']?.priceChange), sourceOf(pool.change?.h24, stats['24h']?.priceChange))
+  });
 
   // Konsistensi arah: positif di semua horizon lebih baik daripada spike 24 jam saja.
   const signs = [change1h, change6h, change24h];
@@ -125,12 +148,12 @@ export function scoreMomentum(candidate) {
 
   const vol1h = pool.volume?.h1 ?? null, vol6h = pool.volume?.h6 ?? null, vol24h = pool.volume?.h24 ?? null;
   const accel = vol1h !== null && vol6h !== null && vol6h > 0 ? vol1h / (vol6h / 6) : null;
-  evidence.push({ metric: 'Volume 1j vs rata-rata 6j', value: accel === null ? 'unknown' : `${accel.toFixed(2)}x`, source: 'DEX Screener' });
+  evidence.push({ metric: 'Volume 1j vs rata-rata 6j', value: accel === null ? 'unknown' : `${accel.toFixed(2)}x`, source: poolSource });
   const accelScore = band(accel, 0, 1.2, 4, 12);
 
   const buys = pool.txns?.h24?.buys ?? null, sells = pool.txns?.h24?.sells ?? null;
   const buyRatio = buys !== null && sells !== null && buys + sells > 0 ? buys / (buys + sells) : null;
-  evidence.push({ metric: 'Rasio buy 24 jam', value: buyRatio === null ? 'unknown' : `${(buyRatio * 100).toFixed(1)}%`, source: 'DEX Screener' });
+  evidence.push({ metric: 'Rasio buy 24 jam', value: buyRatio === null ? 'unknown' : `${(buyRatio * 100).toFixed(1)}%`, source: poolSource });
   const buyScore = band(buyRatio, 0.2, 0.45, 0.62, 0.9);
 
   const netBuyers = stats['1h']?.numNetBuyers ?? stats['6h']?.numNetBuyers ?? null;

@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { fetchRisk } from './risk.mjs';
+import { createRiskProvider } from './risk.mjs';
 import { createHistoryProvider, entryContext } from './history.mjs';
 import { CONFIG_HASH, DISCOVERY, ENTRY, PRESETS, getPreset } from './config.mjs';
 import { createJupiterSource } from './sources/jupiter.mjs';
@@ -26,29 +26,6 @@ export function validMint(value) {
 }
 export function number(value) {
   return (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && Number.isFinite(Number(value)) ? Number(value) : null;
-}
-async function readTextLimited(response, maxBytes) {
-  if (!response.body) return '';
-  const reader = response.body.getReader();
-  const chunks = [];
-  let size = 0;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > maxBytes) {
-      try { await reader.cancel(); } catch { /* oversized body is already rejected */ }
-      throw new Error('Respons terlalu besar');
-    }
-    chunks.push(Buffer.from(value));
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks, size));
-}
-export async function getJSON(url, fetcher = fetch) {
-  const response = await fetcher(url, { signal: AbortSignal.timeout(10000), redirect: 'error', headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const text = await readTextLimited(response, 4_000_000);
-  return JSON.parse(text);
 }
 export function normalizeMarket(data, mint, now = Date.now()) {
   if (!Array.isArray(data)) throw new Error('Skema respons bukan daftar pool');
@@ -84,14 +61,67 @@ export function normalizeMarket(data, mint, now = Date.now()) {
   return { status: pairs.length ? 'available' : 'empty', source: 'DEX Screener', docs: DEX_DOCS, pairs, primary, signals, reason: 'Pool utama = pool dengan mint sebagai base token dan likuiditas USD tertinggi yang dilaporkan. Data tiap pool tidak dijumlahkan; valuasi/harga dapat berbeda antar-pool.' };
 }
 export async function fetchMarket(mint, fetcher = fetch) {
+  const source = createDexScreenerSource({ fetcher });
+  const result = await source.tokenPairs(mint);
   const endpoint = `https://api.dexscreener.com/token-pairs/v1/solana/${mint}`;
-  try { return { ...normalizeMarket(await getJSON(endpoint, fetcher), mint), endpoint, fetchedAt: new Date().toISOString() }; }
-  catch (e) { return { status: 'unknown', source: 'DEX Screener', docs: DEX_DOCS, endpoint, fetchedAt: new Date().toISOString(), reason: `Data pasar unknown: ${e.name === 'TimeoutError' ? 'batas waktu 10 detik' : e.message}. Coba lagi nanti.`, pairs: [], primary: null, signals: [] }; }
+  if (result.status !== 'available') {
+    return { status: 'unknown', source: 'DEX Screener', docs: DEX_DOCS, endpoint, fetchedAt: new Date().toISOString(), reason: `Data pasar unknown: ${result.reason}. Coba lagi nanti.`, pairs: [], primary: null, signals: [] };
+  }
+  try {
+    return { ...normalizeMarket(result.rows, mint), mint, endpoint, fetchedAt: result.fetchedAt };
+  } catch (e) {
+    return { status: 'unknown', source: 'DEX Screener', docs: DEX_DOCS, endpoint, fetchedAt: new Date().toISOString(), reason: `Data pasar unknown: ${e.message}. Coba lagi nanti.`, pairs: [], primary: null, signals: [] };
+  }
+}
+
+/**
+ * Provider pasar Inspect memakai sumber DEX Screener yang sama dengan
+ * Discover, sehingga cache dan batas laju provider tidak dihitung dua kali
+ * dan kedua tab memakai pool yang sama untuk mint yang sama.
+ */
+export function createMarketProvider({ dexscreener, clock = Date.now } = {}) {
+  return async function market(mint, { refresh = false } = {}) {
+    const endpoint = `https://api.dexscreener.com/token-pairs/v1/solana/${mint}`;
+    const result = await dexscreener.tokenPairs(mint, { refresh });
+    if (result.status !== 'available') {
+      return {
+        status: 'unknown', source: 'DEX Screener', docs: DEX_DOCS, endpoint, fetchedAt: new Date(clock()).toISOString(),
+        reason: `Data pasar unknown: ${result.reason ?? 'DEX Screener tidak tersedia'}. Coba lagi nanti.`, pairs: [], primary: null, signals: []
+      };
+    }
+    try {
+      return { ...normalizeMarket(result.rows, mint, clock()), mint, endpoint, fetchedAt: result.fetchedAt };
+    } catch (error) {
+      return { status: 'unknown', source: 'DEX Screener', docs: DEX_DOCS, endpoint, fetchedAt: result.fetchedAt, reason: `Data pasar unknown: ${error.message}. Coba lagi nanti.`, pairs: [], primary: null, signals: [] };
+    }
+  };
 }
 
 function sendJSON(res, headers, status, data) {
   res.writeHead(status, { ...headers, 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
+}
+
+/**
+ * Terapkan hasil deep scan ke baris yang sudah dikirim. Dipakai oleh cache
+ * discover supaya permintaan berikutnya mengembalikan hasil final, bukan
+ * skor awal yang berbeda angkanya.
+ */
+export function applyDeepResult(row, result) {
+  if (!row || !result) return row;
+  row.score = result.score;
+  row.grade = result.grade;
+  row.confidence = result.confidence;
+  row.components = result.components;
+  row.penalties = result.penalties;
+  row.safety = result.safety;
+  row.structure = result.structure;
+  row.entryPlan = result.entryPlan;
+  row.disqualified = result.disqualified ?? null;
+  if (result.market) row.market = { ...row.market, ...result.market };
+  if (result.candleSource) row.candleSource = result.candleSource;
+  if (result.poolCheck) row.poolCheck = result.poolCheck;
+  return row;
 }
 
 function allowedLocalMutationOrigin(req) {
@@ -118,15 +148,15 @@ async function readBody(req, limit = 32_000) {
 }
 
 export function createServer({
-  market = fetchMarket,
-  risk = fetchRisk,
-  history = createHistoryProvider(),
+  market = null,
+  risk = null,
+  history = null,
   db = createDb(),
   jupiter = createJupiterSource(),
   dexscreener = createDexScreenerSource(),
   gecko = createGeckoSource(),
   goplus = createGoPlusSource(),
-  jobs = createJobs(),
+  jobs = null,
   discovery = null,
   deepScan = null,
   clock = Date.now
@@ -134,9 +164,17 @@ export function createServer({
   const cache = new Map();
   const inFlight = new Map();
   const discoverCache = new Map();
+  let activeJobId = null;
   let windowStart = Date.now(), requests = 0;
+  // Satu client per origin untuk seluruh aplikasi: Discover, Inspect, dan
+  // deep scan memakai limiter dan cache yang sama, sehingga batas laju
+  // provider tidak terhitung dua kali untuk satu origin.
+  const marketProvider = market ?? createMarketProvider({ dexscreener, clock });
+  const riskProvider = risk ?? createRiskProvider({ goplus, jupiter, clock });
+  const historyProvider = history ?? createHistoryProvider({ gecko, clock });
+  const jobQueue = jobs ?? createJobs({ concurrency: DISCOVERY.deepConcurrency, clock });
   const discover = discovery ?? createDiscovery({ jupiter, dexscreener, gecko, goplus, db, clock });
-  const deep = deepScan ?? createDeepScan({ gecko, goplus, clock });
+  const deep = deepScan ?? createDeepScan({ gecko, goplus, dexscreener, clock });
 
   return http.createServer(async (req, res) => {
     const headers = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'", 'Cache-Control': 'no-store' };
@@ -176,25 +214,39 @@ export function createServer({
       if (url.pathname === '/api/discover') {
         const preset = url.searchParams.get('preset') || 'balanced';
         const limit = Math.min(DISCOVERY.resultLimit, Math.max(1, Number(url.searchParams.get('limit')) || DISCOVERY.resultLimit));
+        // refresh=1 memaksa sampling baru: cache discover dan cache sumber
+        // dilewati, jadi angka yang tampil benar-benar baru diambil.
+        const refresh = ['1', 'true'].includes(url.searchParams.get('refresh'));
         const key = `${preset}:${limit}`;
         const hit = discoverCache.get(key);
-        if (hit && Date.now() - hit.at < 60_000) return send(200, { ...hit.data, cached: true });
-        const result = await discover({ preset, limit });
+        if (!refresh && hit && Date.now() - hit.at < 60_000) return send(200, { ...hit.data, cached: true });
+        const result = await discover({ preset, limit, refresh });
 
         // Simpan snapshot untuk diff antar-run dan riwayat.
+        const snapshotIds = new Map();
         if (db.available) {
           const at = result.finishedAt;
           for (const row of result.rows) {
             db.upsertToken({ mint: row.mint, symbol: row.symbol, name: row.name, tags: row.organic?.tags, at });
-            db.recordSnapshot({ mint: row.mint, takenAt: at, price: row.market.priceUsd, liquidityUsd: row.market.liquidityUsd, marketCap: row.market.marketCap, fdv: row.market.fdv, volume24h: row.market.volume24h, score: row.score, grade: row.grade, payload: { setup: row.entryPlan?.setup ?? null, gates: row.gates?.warnings ?? [] } });
+            const id = db.recordSnapshot({
+              mint: row.mint, takenAt: at, price: row.market.priceUsd, liquidityUsd: row.market.liquidityUsd,
+              marketCap: row.market.marketCap, fdv: row.market.fdv, volume24h: row.market.volume24h,
+              score: row.score, grade: row.grade,
+              payload: { setup: row.entryPlan?.setup ?? null, gates: row.gates?.warnings ?? [], scoreStage: 'initial' }
+            });
+            snapshotIds.set(row.mint, id);
           }
         }
 
         // Deep scan progresif: hasil awal langsung dikirim, detail di-patch via /api/jobs/:id.
+        // Run baru membatalkan deep scan sebelumnya: dua antrean bersamaan
+        // akan saling memperebutkan kuota GeckoTerminal.
+        if (activeJobId) jobQueue.cancel(activeJobId);
+        activeJobId = null;
         let job = null;
         if (result.deepScanPending?.length) {
           const byMint = new Map(result.rows.map(row => [row.mint, row]));
-          job = jobs.create(result.deepScanPending, async mint => {
+          job = jobQueue.create(result.deepScanPending, async mint => {
             const base = byMint.get(mint);
             const original = result[DISCOVERY_CONTEXT]?.get(mint);
             const candidate = original ? { ...original, now: clock() } : {
@@ -211,7 +263,10 @@ export function createServer({
                 tags: base.organic.tags ?? [],
                 holderCount: base.safety.holderCount ?? base.organic.holderCount,
                 liquidityUsd: base.organic.liquidityUsd,
-                audit: { topHoldersPercentage: base.safety.top10Pct },
+                // Audit Jupiter hanya disalin kalau memang sumber angka
+                // konsentrasi; kalau angka berasal dari GoPlus, sumber
+                // Jupiter jangan dipalsukan.
+                audit: base.safety.top10Source === 'Jupiter' ? { topHoldersPercentage: base.safety.top10Pct } : {},
                 stats: {}
               } : null,
               market: {
@@ -234,7 +289,7 @@ export function createServer({
               structure: null,
               notionalUsd: ENTRY.notionalUsd
             };
-            const enriched = await deep(candidate);
+            const enriched = await deep(candidate, { refresh });
             const presetDef = getPreset(preset);
             const gates = evaluateGates(enriched, presetDef);
             const scoring = scoreCandidate(enriched, presetDef);
@@ -242,7 +297,7 @@ export function createServer({
             if (db.available && enriched.entryPlan) {
               db.recordPlan({ mint, createdAt: new Date(clock()).toISOString(), plan: enriched.entryPlan });
             }
-            return {
+            const payload = {
               mint,
               score: scoring.score,
               grade: scoring.grade,
@@ -260,21 +315,45 @@ export function createServer({
                 atrPct: enriched.structure.atrPct, distanceToHighPct: enriched.structure.distanceToHighPct,
                 higherHigh: enriched.structure.higherHigh, higherLow: enriched.structure.higherLow,
                 change24hPct: enriched.structure.change24hPct, timeframe: enriched.structure.timeframe,
+                close: enriched.structure.close ?? null, lastClosedAt: enriched.structure.lastClosedAt ?? null,
                 candles: enriched.structure.candles, dropped: enriched.structure.dropped ?? 0
               } : null,
               entryPlan: enriched.entryPlan,
+              // Data pasar hasil pemeriksaan ulang pool dan waktu pengambilan
+              // candle: tanpa ini UI tidak bisa menampilkan umur angkanya.
+              market: serialized.market,
+              poolCheck: enriched.poolCheck ?? null,
               candleSource: enriched.candleSource ?? null
             };
+            // Skor final (setelah deep scan) menggantikan skor awal pada
+            // snapshot, supaya backtest memakai grade yang benar-benar
+            // ditampilkan ke pengguna.
+            if (db.available && snapshotIds.has(mint)) {
+              db.updateSnapshotScore(snapshotIds.get(mint), {
+                score: scoring.score,
+                grade: scoring.grade,
+                payload: { setup: enriched.entryPlan?.setup ?? null, gates: gates.warnings ?? [], scoreStage: 'deep' }
+              });
+            }
+            // Cache discover ikut diperbarui supaya permintaan berikutnya
+            // mengembalikan hasil final, bukan skor awal.
+            const cached = discoverCache.get(key);
+            if (cached) {
+              const cachedRow = cached.data.rows?.find(row => row.mint === mint);
+              if (cachedRow) applyDeepResult(cachedRow, payload);
+            }
+            return payload;
           });
         }
-        const response = { ...result, jobId: job?.id ?? null, jobTotal: job?.total ?? 0 };
+        const response = { ...result, jobId: job?.id ?? null, jobTotal: job?.total ?? 0, refreshed: refresh };
+        activeJobId = job?.id ?? null;
         discoverCache.set(key, { at: Date.now(), data: response });
         if (discoverCache.size > 8) discoverCache.delete(discoverCache.keys().next().value);
         return send(200, response);
       }
 
       if (url.pathname.startsWith('/api/jobs/')) {
-        const job = jobs.get(url.pathname.slice('/api/jobs/'.length));
+        const job = jobQueue.get(url.pathname.slice('/api/jobs/'.length));
         if (!job) return send(404, { error: 'Job tidak ditemukan atau sudah kedaluwarsa.' });
         return send(200, job);
       }
@@ -315,14 +394,15 @@ export function createServer({
       if (url.pathname === '/api/scan') {
         const mint = url.searchParams.get('mint')?.trim();
         if (!validMint(mint)) return send(400, { error: 'Masukkan alamat mint Solana base58 yang terdekode menjadi 32 byte. Validasi format tidak membuktikan alamat merupakan akun mint.' });
+        const refresh = ['1', 'true'].includes(url.searchParams.get('refresh'));
         const hit = cache.get(mint);
-        if (hit && Date.now() - hit.at < 30000) return send(200, { ...hit.data, cached: true });
+        if (!refresh && hit && Date.now() - hit.at < 30000) return send(200, { ...hit.data, cached: true });
         if (Date.now() - windowStart >= 60000) { windowStart = Date.now(); requests = 0; }
-        if (!inFlight.has(mint)) {
+        if (!inFlight.has(mint) || refresh) {
           if (++requests > 40) return send(429, { error: 'Batas lokal 40 scan per menit tercapai. Tunggu satu menit.' });
-          inFlight.set(mint, Promise.all([market(mint), risk(mint)]).then(async ([market, risk]) => {
-            const historical = await history(mint, market.primary);
-            const data = { mint, checkedAt: new Date().toISOString(), cached: false, market, risk, history: historical, entryContext: entryContext(market, risk, historical), disclaimer: 'Read-only. Bukan rekomendasi beli/jual. Data pihak ketiga dapat terlambat atau tidak lengkap. Tidak ada hasil yang menjamin token aman.' };
+          inFlight.set(mint, Promise.all([marketProvider(mint, { refresh }), riskProvider(mint)]).then(async ([marketData, riskData]) => {
+            const historical = await historyProvider(mint, marketData.primary);
+            const data = { mint, checkedAt: new Date(clock()).toISOString(), cached: false, refreshed: refresh, market: marketData, risk: riskData, history: historical, entryContext: entryContext(marketData, riskData, historical), disclaimer: 'Read-only. Bukan rekomendasi beli/jual. Data pihak ketiga dapat terlambat atau tidak lengkap. Tidak ada hasil yang menjamin token aman.' };
             if (cache.size >= 100) cache.delete(cache.keys().next().value);
             cache.set(mint, { at: Date.now(), data }); return data;
           }).finally(() => inFlight.delete(mint)));

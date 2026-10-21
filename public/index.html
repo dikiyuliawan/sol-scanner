@@ -38,6 +38,7 @@
         </select>
       </div>
       <button id="discover-button" type="button">Discover kandidat <span aria-hidden="true">↗</span></button>
+      <label class="checkbox" for="refresh-toggle"><input id="refresh-toggle" type="checkbox"> Segarkan data (lewati cache)</label>
     </div>
     <p class="hint" id="preset-hint"></p>
     <p class="hint" id="config-hint">Memuat konfigurasi…</p>
@@ -55,7 +56,7 @@
 
     <section class="panel">
       <div class="section-head"><h3>Kandidat ter-rank</h3><span id="deep-status" class="tag">deep scan: -</span></div>
-      <p class="hint">Tekan Rincian untuk melihat komponen skor, bukti per metrik, penalti, dan rencana entry. Angka tanpa sumber jelas tidak ditampilkan sebagai fakta.</p>
+      <p class="hint">Tekan Rincian untuk melihat komponen skor, bukti per metrik, penalti, waktu pengambilan tiap angka, dan rencana entry. Angka tanpa sumber jelas tidak ditampilkan sebagai fakta. Deep scan berjalan di latar untuk semua baris (±13 detik per token karena batas publik GeckoTerminal); baris yang belum selesai bertanda “antri”.</p>
       <div class="table-wrap">
         <table id="candidates-table">
           <thead><tr>

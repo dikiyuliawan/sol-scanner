@@ -89,8 +89,23 @@ export function createDb(file = 'data/scanner.db') {
       return Number(result.lastInsertRowid);
     },
     recordSnapshot({ mint, takenAt, price, liquidityUsd, marketCap, fdv, volume24h, score, grade, payload }) {
-      stmt('INSERT INTO snapshots (mint, taken_at, price, liquidity_usd, market_cap, fdv, volume_24h, score, grade, json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      const result = stmt('INSERT INTO snapshots (mint, taken_at, price, liquidity_usd, market_cap, fdv, volume_24h, score, grade, json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(mint, takenAt, price ?? null, liquidityUsd ?? null, marketCap ?? null, fdv ?? null, volume24h ?? null, score ?? null, grade ?? null, JSON.stringify(payload ?? {}));
+      return Number(result.lastInsertRowid);
+    },
+    /**
+     * Ganti skor/grade snapshot dengan hasil final deep scan. Tanpa ini
+     * backtest memakai grade yang berbeda dari yang dilihat pengguna.
+     */
+    updateSnapshotScore(id, { score, grade, payload }) {
+      if (id === null || id === undefined) return false;
+      const row = stmt('SELECT json FROM snapshots WHERE id = ?').get(id);
+      if (!row) return false;
+      const existing = safeParse(row.json) ?? {};
+      const merged = { ...existing, ...(payload ?? {}), scoreStage: payload?.scoreStage ?? existing.scoreStage ?? 'deep' };
+      stmt('UPDATE snapshots SET score = ?, grade = ?, json = ? WHERE id = ?')
+        .run(score ?? null, grade ?? null, JSON.stringify(merged), id);
+      return true;
     },
     upsertToken({ mint, symbol, name, tags, at }) {
       stmt(`INSERT INTO tokens (mint, symbol, name, first_seen, last_seen, tags_json) VALUES (?, ?, ?, ?, ?, ?)
@@ -122,23 +137,35 @@ export function createDb(file = 'data/scanner.db') {
         .map(row => ({ id: row.id, startedAt: row.started_at, preset: row.preset, configHash: row.config_hash, candidates: row.candidates, accepted: row.accepted, rejected: row.rejected }));
     },
     snapshotHistory(mint, limit = 50) {
-      return stmt('SELECT taken_at, price, liquidity_usd, market_cap, volume_24h, score, grade FROM snapshots WHERE mint = ? ORDER BY id DESC LIMIT ?').all(mint, limit)
-        .map(row => ({ takenAt: row.taken_at, price: row.price, liquidityUsd: row.liquidity_usd, marketCap: row.market_cap, volume24h: row.volume_24h, score: row.score, grade: row.grade }));
+      return stmt('SELECT taken_at, price, liquidity_usd, market_cap, volume_24h, score, grade, json FROM snapshots WHERE mint = ? ORDER BY id DESC LIMIT ?').all(mint, limit)
+        .map(row => {
+          const payload = safeParse(row.json) ?? {};
+          return {
+            takenAt: row.taken_at, price: row.price, liquidityUsd: row.liquidity_usd, marketCap: row.market_cap,
+            volume24h: row.volume_24h, score: row.score, grade: row.grade, scoreStage: payload.scoreStage ?? 'initial'
+          };
+        });
     },
     /** Semua snapshot, untuk backtest forward-test offline. */
     allSnapshots() {
-      return stmt('SELECT mint, taken_at, price, liquidity_usd, market_cap, fdv, volume_24h, score, grade FROM snapshots ORDER BY mint, taken_at').all()
-        .map(row => ({
-          mint: row.mint,
-          takenAt: row.taken_at,
-          price: row.price,
-          liquidityUsd: row.liquidity_usd,
-          marketCap: row.market_cap,
-          fdv: row.fdv,
-          volume24h: row.volume_24h,
-          score: row.score,
-          grade: row.grade
-        }));
+      return stmt('SELECT mint, taken_at, price, liquidity_usd, market_cap, fdv, volume_24h, score, grade, json FROM snapshots ORDER BY mint, taken_at').all()
+        .map(row => {
+          const payload = safeParse(row.json) ?? {};
+          return {
+            mint: row.mint,
+            takenAt: row.taken_at,
+            price: row.price,
+            liquidityUsd: row.liquidity_usd,
+            marketCap: row.market_cap,
+            fdv: row.fdv,
+            volume24h: row.volume_24h,
+            score: row.score,
+            grade: row.grade,
+            // Tahap skor: 'initial' = sebelum deep scan, 'deep' = setelah
+            // deep scan. Campuran keduanya harus terlihat di laporan.
+            scoreStage: payload.scoreStage ?? 'initial'
+          };
+        });
     }
   };
 }

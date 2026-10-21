@@ -53,9 +53,13 @@ test('deep scan membawa seluruh bukti awal dan envelope mint tanpa membocorkan k
   const pool = { poolAddress: 'Poo1111111111111111111111111111111111111111', dex: 'fixture', priceUsd: 1, liquidityUsd: 500000, marketCap: 5000000, fdv: 5000000, createdAt: now - 72 * 3600000, change: { h1: 2, h6: 5, h24: 10 }, volume: { h1: 50000, h6: 150000, h24: 500000 }, txns: { h24: { buys: 600, sells: 400 } } };
   let input;
   const base = await localServer(t, {
-    jupiter: { topOrganic: async () => ({ status: 'available', source: 'Jupiter', tokens: [token] }), topTrending: async () => ({ status: 'available', source: 'Jupiter', tokens: [token] }) },
+    jupiter: {
+      topOrganic: async () => ({ status: 'available', source: 'Jupiter', tokens: [token] }),
+      topTrending: async () => ({ status: 'available', source: 'Jupiter', tokens: [token] }),
+      recent: async () => ({ status: 'available', source: 'Jupiter', tokens: [token] })
+    },
     dexscreener: { batch: async () => ({ status: 'available', pools: new Map([[mint, pool]]) }) },
-    gecko: { trending: async () => ({ status: 'available', pools: [] }) },
+    gecko: { trending: async () => ({ status: 'available', pools: [] }), newPools: async () => ({ status: 'available', pools: [] }) },
     deepScan: async candidate => { input = candidate; return candidate; }
   });
   const initial = await (await fetch(`${base}/api/discover?preset=balanced`)).json();

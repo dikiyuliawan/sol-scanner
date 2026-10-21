@@ -23,7 +23,8 @@ function fakeSources({ jupiterTokens = [jupiterToken()], pool = null, candles = 
   return {
     jupiter: {
       async topOrganic() { return { status: 'available', source: 'Jupiter', tokens: jupiterTokens, fetchedAt: new Date(NOW).toISOString() }; },
-      async topTrending() { return { status: 'available', source: 'Jupiter', tokens: jupiterTokens, fetchedAt: new Date(NOW).toISOString() }; }
+      async topTrending() { return { status: 'available', source: 'Jupiter', tokens: jupiterTokens, fetchedAt: new Date(NOW).toISOString() }; },
+      async recent() { return { status: 'available', source: 'Jupiter', tokens: jupiterTokens, fetchedAt: new Date(NOW).toISOString() }; }
     },
     dexscreener: {
       async batch(mints) {
@@ -237,4 +238,197 @@ test('db tanpa node:sqlite tetap melaporkan mode stateless, bukan crash', async 
   const db = createDb(':memory:');
   assert.equal(typeof db.available, 'boolean');
   db.close();
+});
+
+/* ---------------- sumber universe dan kesegaran data ---------------- */
+
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function base58Index(value) {
+  let text = '';
+  let number = value + 1;
+  while (number > 0) { text = BASE58[number % 58] + text; number = Math.floor(number / 58); }
+  return text;
+}
+function universeToken(index) {
+  // Panjang base58 harus 32-44 karakter dan hanya memakai karakter base58
+  // supaya lolos validasi mint.
+  return { mint: `TokenMint${base58Index(index)}${'1'.repeat(26)}`, symbol: `T${index}`, isVerified: true, tags: ['verified'], organicScore: 70, organicLabel: 'high', holderCount: 5000, liquidityUsd: 900_000, audit: { mintAuthorityDisabled: true, freezeAuthorityDisabled: true, topHoldersPercentage: 12 }, stats: { '1h': {}, '6h': {}, '24h': {}, '5m': {} } };
+}
+
+test('semua sumber universe berkontribusi pada kandidat yang dievaluasi', async () => {
+  const organic = Array.from({ length: 40 }, (_, index) => universeToken(index));
+  const trending = Array.from({ length: 20 }, (_, index) => universeToken(100 + index));
+  const organic24 = Array.from({ length: 20 }, (_, index) => universeToken(200 + index));
+  const recent = Array.from({ length: 20 }, (_, index) => universeToken(300 + index));
+  const geckoPools = Array.from({ length: 20 }, (_, index) => ({ ...universeToken(400 + index), liquidityUsd: undefined }));
+  const sources = {
+    jupiter: {
+      async topOrganic(interval) { return { status: 'available', source: 'Jupiter', tokens: interval === '24h' ? organic24 : organic, fetchedAt: new Date(NOW).toISOString() }; },
+      async topTrending() { return { status: 'available', source: 'Jupiter', tokens: trending, fetchedAt: new Date(NOW).toISOString() }; },
+      async recent() { return { status: 'available', source: 'Jupiter', tokens: recent, fetchedAt: new Date(NOW).toISOString() }; }
+    },
+    dexscreener: {
+      async batch(mints) {
+        const pools = new Map();
+        for (const mint of mints) pools.set(mint, { ...healthyPool, baseMint: mint, baseSymbol: 'EX' });
+        return { status: 'available', source: 'DEX Screener', pools, fetchedAt: new Date(NOW).toISOString() };
+      }
+    },
+    gecko: {
+      async trending(page) { return { status: 'available', source: 'GeckoTerminal', pools: geckoPools.map(pool => ({ ...pool, poolAddress: `Pool${page}${pool.mint.slice(0, 12)}` })), fetchedAt: new Date(NOW).toISOString() }; },
+      async newPools() { return { status: 'available', source: 'GeckoTerminal', pools: geckoPools.map(pool => ({ ...pool, poolAddress: `New${pool.mint.slice(0, 12)}` })), fetchedAt: new Date(NOW).toISOString() }; },
+      async candles() { return { status: 'available', source: 'GeckoTerminal', candles: [], meta: null, fetchedAt: new Date(NOW).toISOString() }; }
+    },
+    goplus: { async security() { return { status: 'unknown', source: 'GoPlus', security: null, fetchedAt: null, reason: 'tidak tersedia' }; } }
+  };
+  const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'balanced', skipDeep: true });
+  const breakdown = result.universe.sources;
+  assert.ok(Object.keys(breakdown).length >= 5, `semua sumber harus berkontribusi: ${JSON.stringify(breakdown)}`);
+  for (const [label, count] of Object.entries(breakdown)) {
+    assert.ok(count > 0, `sumber ${label} tidak boleh nol: ${JSON.stringify(breakdown)}`);
+  }
+  const selected = new Set(result.rows.map(row => row.mint));
+  assert.ok(selected.has(trending[0].mint), 'kandidat dari daftar trending harus masuk');
+  assert.ok(selected.has(organic24[0].mint), 'kandidat dari daftar organic 24 jam harus masuk');
+  assert.ok(selected.has(recent[0].mint), 'kandidat dari daftar token terbaru harus masuk');
+});
+
+test('sumber yang mengembalikan daftar kosong menghasilkan warning', async () => {
+  const sources = fakeSources({ pool: healthyPool });
+  sources.jupiter.topTrending = async () => ({ status: 'available', source: 'Jupiter', tokens: [], fetchedAt: new Date(NOW).toISOString() });
+  const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'balanced', skipDeep: true });
+  assert.ok(result.warnings.some(reason => /trending 1 jam tidak mengembalikan token apa pun/.test(reason)), result.warnings.join(' | '));
+});
+
+test('preset ketat tanpa kandidat yang lolos gate awal tetap menjelaskan diri', async () => {
+  const sources = fakeSources({ pool: { ...healthyPool, liquidityUsd: 1000 } });
+  const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'conservative', skipDeep: true });
+  assert.ok(result.warnings.some(reason => /tidak ada kandidat yang lolos gate awal/.test(reason)), result.warnings.join(' | '));
+});
+
+test('deep scan memakai pool utama provider dan memperbarui data pasar baris', async t => {
+  const sources = fakeSources({
+    pool: healthyPool,
+    candles: hourlyCandles(),
+    security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
+  });
+  sources.dexscreener.mainPool = async () => ({
+    status: 'available', source: 'DEX Screener', fetchedAt: new Date(NOW).toISOString(),
+    pool: { ...healthyPool, poolAddress: 'Poo2222222222222222222222222222222222222222', liquidityUsd: 900_000, priceUsd: 0.6 },
+    reason: null
+  });
+  const db = createDb(':memory:');
+  const server = createServer({ ...sources, db, jobs: createJobs({ clock: () => NOW }), clock: () => NOW });
+  const base = await withServer(t, server);
+  const data = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const job = await (await fetch(`${base}/api/jobs/${data.jobId}`)).json();
+  const result = job.results[0].result;
+  assert.equal(result.market.poolAddress, 'Poo2222222222222222222222222222222222222222');
+  assert.equal(result.market.liquidityUsd, 900_000);
+  assert.equal(result.poolCheck.replaced, true);
+  db.close();
+});
+
+test('snapshot memakai skor final setelah deep scan, bukan skor awal', async t => {
+  const sources = fakeSources({
+    pool: healthyPool,
+    candles: hourlyCandles(),
+    security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
+  });
+  const db = createDb(':memory:');
+  const server = createServer({ ...sources, db, jobs: createJobs({ clock: () => NOW }), clock: () => NOW });
+  const base = await withServer(t, server);
+  const data = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const job = await (await fetch(`${base}/api/jobs/${data.jobId}`)).json();
+  const history = await (await fetch(`${base}/api/history?mint=${MINT}`)).json();
+  assert.equal(history.snapshots[0].scoreStage, 'deep');
+  assert.equal(history.snapshots[0].score, job.results[0].result.score);
+  assert.equal(history.snapshots[0].grade, job.results[0].result.grade);
+  db.close();
+});
+
+test('cache discover mengembalikan hasil final deep scan pada permintaan berikutnya', async t => {
+  const sources = fakeSources({
+    pool: healthyPool,
+    candles: hourlyCandles(),
+    security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
+  });
+  const server = createServer({ ...sources, db: createDb(':memory:'), jobs: createJobs({ clock: () => NOW }), clock: () => NOW });
+  const base = await withServer(t, server);
+  const first = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const job = await (await fetch(`${base}/api/jobs/${first.jobId}`)).json();
+  const second = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
+  assert.equal(second.cached, true);
+  assert.equal(second.rows[0].score, job.results[0].result.score, 'cache harus mengembalikan skor final');
+  assert.equal(second.rows[0].grade, job.results[0].result.grade);
+});
+
+test('refresh=1 melewati cache discover dan cache sumber', async t => {
+  let batches = 0;
+  const sources = fakeSources({ pool: healthyPool });
+  const original = sources.dexscreener.batch.bind(sources.dexscreener);
+  sources.dexscreener.batch = async (...args) => { batches += 1; return original(...args); };
+  const server = createServer({ ...sources, db: createDb(':memory:'), clock: () => NOW });
+  const base = await withServer(t, server);
+  await (await fetch(`${base}/api/discover?preset=balanced`)).json();
+  const cached = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
+  assert.equal(cached.cached, true);
+  assert.equal(batches, 1);
+  const refreshed = await (await fetch(`${base}/api/discover?preset=balanced&refresh=1`)).json();
+  assert.equal(refreshed.cached, undefined);
+  assert.equal(refreshed.refreshed, true);
+  assert.equal(batches, 2, 'refresh harus mengambil data pasar baru');
+});
+
+/* ---------------- kedalaman antrean dan verifikasi holder ---------------- */
+
+function multiTokenSources({ count = 6, candles = [], security = null } = {}) {
+  const tokens = Array.from({ length: count }, (_, index) => ({ ...universeToken(index), symbol: `T${index}` }));
+  const sources = fakeSources({ jupiterTokens: tokens, candles, security });
+  sources.dexscreener.batch = async mints => {
+    const pools = new Map();
+    for (const mint of mints) pools.set(mint, { ...healthyPool, baseMint: mint, baseSymbol: 'EX' });
+    return { status: 'available', source: 'DEX Screener', pools, fetchedAt: new Date(NOW).toISOString() };
+  };
+  return sources;
+}
+
+test('deep scan mencakup semua baris yang lolos gate, bukan hanya empat teratas', async () => {
+  const sources = multiTokenSources({
+    count: 6,
+    candles: hourlyCandles(),
+    security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
+  });
+  const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'balanced' });
+  assert.equal(result.rows.length, 6);
+  assert.equal(result.deepScanPending.length, 6, 'semua baris harus masuk antrean deep scan');
+});
+
+test('kandidat tanpa jumlah holder Jupiter diverifikasi lewat GoPlus agar tidak gugur sebagai unknown', async () => {
+  const geckoToken = { ...universeToken(900), symbol: 'GK', holderCount: undefined, liquidityUsd: undefined };
+  const sources = fakeSources({ pool: healthyPool });
+  sources.jupiter.topOrganic = async () => ({ status: 'available', source: 'Jupiter', tokens: [], fetchedAt: new Date(NOW).toISOString() });
+  sources.jupiter.topTrending = async () => ({ status: 'available', source: 'Jupiter', tokens: [], fetchedAt: new Date(NOW).toISOString() });
+  sources.jupiter.recent = async () => ({ status: 'available', source: 'Jupiter', tokens: [], fetchedAt: new Date(NOW).toISOString() });
+  sources.gecko.newPools = async () => ({ status: 'available', source: 'GeckoTerminal', pools: [{ ...geckoToken, poolAddress: 'GeckoPool11111111111111111111111111111111111' }], fetchedAt: new Date(NOW).toISOString() });
+  sources.gecko.trending = async () => ({ status: 'available', source: 'GeckoTerminal', pools: [], fetchedAt: new Date(NOW).toISOString() });
+  sources.dexscreener.batch = async mints => {
+    const pools = new Map();
+    for (const mint of mints) pools.set(mint, { ...healthyPool, baseMint: mint, baseSymbol: 'GK' });
+    return { status: 'available', source: 'DEX Screener', pools, fetchedAt: new Date(NOW).toISOString() };
+  };
+  let verified = null;
+  sources.goplus.security = async mint => {
+    verified = mint;
+    return { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 20, holderCount: 5000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } };
+  };
+  // Pool baru hanya diambil untuk preset yang menerima likuiditas tipis.
+  const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'degen', skipDeep: true });
+  assert.equal(verified, geckoToken.mint, 'kandidat tanpa holder Jupiter harus diverifikasi lewat GoPlus');
+  assert.equal(result.rows.length, 1, 'dengan jumlah holder dari GoPlus kandidat bisa lolos gate');
+  assert.ok(result.warnings.some(reason => /GoPlus diverifikasi/.test(reason)), result.warnings.join(' | '));
+  assert.ok(result.universe.sources['GeckoTerminal pool baru'] > 0, 'sumber pool baru harus dievaluasi pada preset degen');
 });
