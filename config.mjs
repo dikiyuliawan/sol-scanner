@@ -133,6 +133,17 @@ export const ENTRY = {
   extendedPct: 12
 };
 
+/**
+ * Batas waktu satu poll di Vercel (60 detik). Tunggu slot latar dibatasi
+ * supaya satu poll tetap selesai di bawah batas itu; item yang macet di
+ * status processing ditandai gagal setelah reapAfterMs (lebih lama dari satu
+ * poll penuh, sehingga tidak menandai item yang masih berjalan).
+ */
+export const SERVERLESS = {
+  backgroundWaitMs: 30_000,
+  reapAfterMs: 75_000
+};
+
 export const GRADE_THRESHOLDS = { A: 75, B: 60, C: 45 };
 
 /** Aset dasar yang bukan kandidat "token baru untuk entry". */

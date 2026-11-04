@@ -353,7 +353,10 @@ function pollJob(jobId, total) {
   // Deep scan mencakup semua baris dan diberi tempo (satu token setiap
   // ~13 detik karena batas publik GeckoTerminal), jadi satu run bisa
   // memakan beberapa menit. Batas poll disesuaikan dengan itu.
-  const deadline = Date.now() + 8 * 60_000;
+  // Di Vercel satu token diproses per poll (~15–25 detik). Run 15 baris
+  // membutuhkan sekitar 5 menit; batas 12 menit memberi ruang untuk antrean
+  // yang lambat tanpa membiarkan tab polling selamanya.
+  const deadline = Date.now() + 12 * 60_000;
   const tick = async () => {
     let job;
     try {

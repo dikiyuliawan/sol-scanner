@@ -1,4 +1,4 @@
-import { LIMITS } from '../config.mjs';
+import { LIMITS, SERVERLESS } from '../config.mjs';
 import { createCache } from '../lib/cache.mjs';
 import { createLimiter, rateLimitError } from '../lib/limiter.mjs';
 import { getJSON, errorReason, createBreaker, HttpError } from '../lib/http.mjs';
@@ -56,7 +56,7 @@ export function createGeckoSource({ fetcher = fetch, clock = Date.now, minGapMs 
   const breaker = createBreaker({ clock });
   let lastCallAt = 0;
 
-  async function request(path, { wait = false, maxWaitMs = 120_000 } = {}) {
+  async function request(path, { wait = false, maxWaitMs = SERVERLESS.backgroundWaitMs } = {}) {
     const blocked = breaker.check();
     if (blocked.blocked) {
       throw new HttpError(`GeckoTerminal sedang tidak dapat dihubungi (gagal berulang); jeda ${Math.ceil(blocked.retryAfterMs / 1000)} detik sebelum mencoba lagi.`, { url: path });

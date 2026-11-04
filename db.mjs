@@ -252,8 +252,8 @@ function openSqlite(file) {
       const cutoff = new Date(Date.now() - olderThanMs).toISOString();
       return Number(stmt(`UPDATE jobs SET status = 'failed', error = 'kadaluarsa' WHERE job_id = ? AND status = 'processing' AND updated_at < ?`).run(jobId, cutoff).changes);
     },
-    async cancelJob(jobId) {
-      return Number(stmt(`UPDATE jobs SET status = 'cancelled', updated_at = ? WHERE job_id = ? AND status = 'pending'`).run(nowIso(), jobId).changes);
+    async cancelPendingJobs({ exceptJobId = null } = {}) {
+      return Number(stmt(`UPDATE jobs SET status = 'cancelled', updated_at = ? WHERE status = 'pending' AND job_id IS NOT ?`).run(nowIso(), exceptJobId).changes);
     },
     async jobSummary(jobId) {
       const counts = stmt(`SELECT
@@ -417,8 +417,8 @@ async function openTurso({ url, authToken }) {
       const result = await client.execute({ sql: "UPDATE jobs SET status = 'failed', error = 'kadaluarsa' WHERE job_id = ? AND status = 'processing' AND updated_at < ?", args: [jobId, cutoff] });
       return Number(result.rowsAffected ?? 0);
     },
-    async cancelJob(jobId) {
-      const result = await client.execute({ sql: "UPDATE jobs SET status = 'cancelled', updated_at = ? WHERE job_id = ? AND status = 'pending'", args: [nowIso(), jobId] });
+    async cancelPendingJobs({ exceptJobId = null } = {}) {
+      const result = await client.execute({ sql: "UPDATE jobs SET status = 'cancelled', updated_at = ? WHERE status = 'pending' AND job_id IS NOT ?", args: [nowIso(), exceptJobId] });
       return Number(result.rowsAffected ?? 0);
     },
     async jobSummary(jobId) {

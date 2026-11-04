@@ -1,4 +1,4 @@
-import { LIMITS } from '../config.mjs';
+import { LIMITS, SERVERLESS } from '../config.mjs';
 import { createCache } from '../lib/cache.mjs';
 import { createLimiter, rateLimitError } from '../lib/limiter.mjs';
 import { getJSON, errorReason, createBreaker } from '../lib/http.mjs';
@@ -99,7 +99,7 @@ export function createGoPlusSource({ fetcher = fetch, clock = Date.now } = {}) {
         // Permintaan latar menunggu slot tersedia; permintaan interaktif
         // menunggu sebentar lalu menyerah supaya UI tidak menggantung.
         const decision = background
-          ? await limiter.wait('goplus', config.perMinute, 60_000, { reserve: config.interactiveReserve, maxWaitMs: 120_000 })
+          ? await limiter.wait('goplus', config.perMinute, 60_000, { reserve: config.interactiveReserve, maxWaitMs: SERVERLESS.backgroundWaitMs })
           : await limiter.wait('goplus', config.perMinute, 60_000, { reserve: 0, maxWaitMs: 10_000 });
         if (!decision.ok) throw rateLimitError('GoPlus', decision);
         const gap = clock() - lastCallAt;
