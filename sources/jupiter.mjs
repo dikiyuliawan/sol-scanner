@@ -82,16 +82,17 @@ export function createJupiterSource({ fetcher = fetch, clock = Date.now } = {}) 
       breaker.recordSuccess();
       return data;
     } catch (error) {
-      limiter.refund('jupiter');
-      if (error.transient) breaker.recordFailure();
-      if (error.status === 429) limiter.cooldown('jupiter', error.retryAfterMs ?? 30_000);
+      // Hanya kegagalan jaringan (request kemungkinan tidak sampai ke origin)
+      // yang mengembalikan slot; respons HTTP berarti origin sudah bekerja.
+      if (error.transient) limiter.refund('jupiter', decision.slot);
+      if (error.transient || (error.status ?? 0) >= 500) breaker.recordFailure();
+      if (error.status === 429) limiter.cooldown('jupiter', Math.max(error.retryAfterMs ?? 0, 30_000));
       throw error;
     }
   }
 
   async function list(path, { refresh = false } = {}) {
-    const { value } = await cache.resolve(path, () => request(path), { bypass: refresh });
-    return value;
+    return cache.resolve(path, () => request(path), { bypass: refresh });
   }
 
   return {
@@ -99,9 +100,10 @@ export function createJupiterSource({ fetcher = fetch, clock = Date.now } = {}) 
     docs: JUPITER_DOCS,
     async topOrganic(interval = '1h', limit = 100, { refresh = false } = {}) {
       if (!INTERVALS.includes(interval)) throw new Error(`Interval Jupiter tidak dikenal: ${interval}`);
-      const fetchedAt = new Date(clock()).toISOString();
+      let fetchedAt = new Date(clock()).toISOString();
       try {
-        const data = await list(`/tokens/v2/toporganicscore/${interval}?limit=${Math.min(100, Math.max(1, limit))}`, { refresh });
+        const { value: data, at } = await list(`/tokens/v2/toporganicscore/${interval}?limit=${Math.min(100, Math.max(1, limit))}`, { refresh });
+        fetchedAt = new Date(at).toISOString();
         if (!Array.isArray(data)) throw new Error('skema bukan daftar token');
         return { status: 'available', source: 'Jupiter', interval, fetchedAt, tokens: data.map(raw => normalizeJupiterToken(raw, fetchedAt)).filter(Boolean), reason: null };
       } catch (error) {
@@ -110,9 +112,10 @@ export function createJupiterSource({ fetcher = fetch, clock = Date.now } = {}) 
     },
     async topTrending(interval = '1h', limit = 100, { refresh = false } = {}) {
       if (!INTERVALS.includes(interval)) throw new Error(`Interval Jupiter tidak dikenal: ${interval}`);
-      const fetchedAt = new Date(clock()).toISOString();
+      let fetchedAt = new Date(clock()).toISOString();
       try {
-        const data = await list(`/tokens/v2/toptrending/${interval}?limit=${Math.min(100, Math.max(1, limit))}`, { refresh });
+        const { value: data, at } = await list(`/tokens/v2/toptrending/${interval}?limit=${Math.min(100, Math.max(1, limit))}`, { refresh });
+        fetchedAt = new Date(at).toISOString();
         if (!Array.isArray(data)) throw new Error('skema bukan daftar token');
         return { status: 'available', source: 'Jupiter', interval, fetchedAt, tokens: data.map(raw => normalizeJupiterToken(raw, fetchedAt)).filter(Boolean), reason: null };
       } catch (error) {
@@ -120,9 +123,10 @@ export function createJupiterSource({ fetcher = fetch, clock = Date.now } = {}) 
       }
     },
     async recent(limit = 100, { refresh = false } = {}) {
-      const fetchedAt = new Date(clock()).toISOString();
+      let fetchedAt = new Date(clock()).toISOString();
       try {
-        const data = await list(`/tokens/v2/recent?limit=${Math.min(100, Math.max(1, limit))}`, { refresh });
+        const { value: data, at } = await list(`/tokens/v2/recent?limit=${Math.min(100, Math.max(1, limit))}`, { refresh });
+        fetchedAt = new Date(at).toISOString();
         if (!Array.isArray(data)) throw new Error('skema bukan daftar token');
         return { status: 'available', source: 'Jupiter', fetchedAt, tokens: data.map(raw => normalizeJupiterToken(raw, fetchedAt)).filter(Boolean), reason: null };
       } catch (error) {

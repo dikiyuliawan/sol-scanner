@@ -108,9 +108,11 @@ export function createDexScreenerSource({ fetcher = fetch, clock = Date.now } = 
       breaker.recordSuccess();
       return data;
     } catch (error) {
-      limiter.refund('dexscreener');
-      if (error.transient) breaker.recordFailure();
-      if (error.status === 429) limiter.cooldown('dexscreener', error.retryAfterMs ?? 30_000);
+      // Hanya kegagalan jaringan (request kemungkinan tidak sampai ke origin)
+      // yang mengembalikan slot; respons HTTP berarti origin sudah bekerja.
+      if (error.transient) limiter.refund('dexscreener', decision.slot);
+      if (error.transient || (error.status ?? 0) >= 500) breaker.recordFailure();
+      if (error.status === 429) limiter.cooldown('dexscreener', Math.max(error.retryAfterMs ?? 0, 30_000));
       throw error;
     }
   }
@@ -122,10 +124,10 @@ export function createDexScreenerSource({ fetcher = fetch, clock = Date.now } = 
     const size = config.batchSize;
     const chunks = [];
     for (let index = 0; index < unique.length; index += size) chunks.push(unique.slice(index, index + size));
-    const fetchedAt = new Date(clock()).toISOString();
+    let fetchedAt = new Date(clock()).toISOString();
     const key = `batch:${unique.slice().sort().join(',')}`;
     try {
-      const { value, cached } = await cache.resolve(key, async () => {
+      const { value, cached, at } = await cache.resolve(key, async () => {
         const rows = [];
         for (const chunk of chunks) {
           const part = await request(`/tokens/v1/solana/${chunk.join(',')}`);
@@ -134,6 +136,7 @@ export function createDexScreenerSource({ fetcher = fetch, clock = Date.now } = 
         }
         return rows;
       }, { bypass: refresh });
+      fetchedAt = new Date(at).toISOString();
       if (!Array.isArray(value)) throw new Error('Skema respons bukan daftar pool');
       const byMint = new Map();
       for (const raw of value) {
@@ -159,13 +162,14 @@ export function createDexScreenerSource({ fetcher = fetch, clock = Date.now } = 
    * untuk memeriksa ulang pool utama shortlist Discover.
    */
   async function tokenPairs(mint, { refresh = false } = {}) {
-    const fetchedAt = new Date(clock()).toISOString();
+    let fetchedAt = new Date(clock()).toISOString();
     if (typeof mint !== 'string' || !mint) {
       return { status: 'unknown', source: 'DEX Screener', fetchedAt, rows: [], reason: 'Alamat mint tidak valid; pool tidak diminta.' };
     }
     const key = `pairs:${mint}`;
     try {
-      const { value, cached } = await cache.resolve(key, () => request(`/token-pairs/v1/solana/${mint}`), { bypass: refresh });
+      const { value, cached, at } = await cache.resolve(key, () => request(`/token-pairs/v1/solana/${mint}`), { bypass: refresh });
+      fetchedAt = new Date(at).toISOString();
       if (!Array.isArray(value)) throw new Error('Skema respons bukan daftar pool');
       return { status: 'available', source: 'DEX Screener', fetchedAt, cached, rows: value, reason: null };
     } catch (error) {

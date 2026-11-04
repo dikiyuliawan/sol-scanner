@@ -6,7 +6,7 @@ import { createServer } from '../server.mjs';
 import { createDb } from '../db.mjs';
 
 async function localServer(t, options = {}) {
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   const server = createServer({ db, ...options });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');

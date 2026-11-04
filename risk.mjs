@@ -9,11 +9,14 @@ import { createJupiterSource } from './sources/jupiter.mjs';
  * Setiap nilai yang tidak tersedia tetap `unknown`, bukan "aman".
  */
 export function createRiskProvider({ goplus = createGoPlusSource(), jupiter = createJupiterSource(), clock = Date.now } = {}) {
-  return async function risk(mint) {
+  return async function risk(mint, { refresh = false } = {}) {
     const [security, search] = await Promise.all([
-      goplus.security(mint),
+      goplus.security(mint, { refresh }).catch(error => ({
+        status: 'unknown', source: 'GoPlus', security: null, fetchedAt: null,
+        reason: error?.message ?? 'GoPlus gagal'
+      })),
       Promise.resolve().then(async () => {
-        const result = await jupiter.topOrganic('1h', 100);
+        const result = await jupiter.topOrganic('1h', 100, { refresh });
         if (result.status !== 'available') return { status: 'unknown', token: null, reason: result.reason };
         return { status: 'available', token: result.tokens.find(token => token.mint === mint) ?? null, reason: null };
       }).catch(error => ({ status: 'unknown', token: null, reason: error?.message ?? 'Jupiter gagal' }))
@@ -108,7 +111,7 @@ export function createRiskProvider({ goplus = createGoPlusSource(), jupiter = cr
 // benar-benar dipakai; server memakai createRiskProvider dengan sumber yang
 // sudah dipakai Discover agar cache dan batas laju tidak terhitung dua kali.
 let defaultProvider = null;
-export async function fetchRisk(mint) {
+export async function fetchRisk(mint, options = {}) {
   defaultProvider ??= createRiskProvider();
-  return defaultProvider(mint);
+  return defaultProvider(mint, options);
 }

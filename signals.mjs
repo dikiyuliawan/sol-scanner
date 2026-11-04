@@ -91,9 +91,6 @@ export function analyzeCandles(rows, { now = Date.now(), tolerant = false } = {}
       return unknownResult('Ada celah pada 21 candle tertutup terakhir; analisis memerlukan interval yang berurutan.', candles, lastClosedAt, candleAgeSeconds, droppedRows);
     }
   }
-  if (candleAgeSeconds < 0) {
-    return unknownResult('Waktu penutupan candle terakhir berada di masa depan.', candles, lastClosedAt, candleAgeSeconds, droppedRows);
-  }
   if (candleAgeSeconds > MAX_CANDLE_AGE_SECONDS) {
     return unknownResult('Candle terakhir sudah stale: usia penutupan melebihi 1800 detik.', candles, lastClosedAt, candleAgeSeconds, droppedRows);
   }

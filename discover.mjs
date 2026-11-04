@@ -162,9 +162,9 @@ export function createDiscovery({ jupiter, dexscreener, gecko, goplus, db = null
       }
       // Kandidat tanpa data holder, diurutkan dari sumber paling segar.
       const byMint = new Map(candidates.map(candidate => [candidate.mint, candidate]));
-      for (const group of groups) {
+      verifyLoop: for (const group of groups) {
         for (const item of group.items) {
-          if (toVerify.size >= DISCOVERY.verifySafetyTop + DISCOVERY.verifyHolderTop) break;
+          if (toVerify.size >= DISCOVERY.verifySafetyTop + DISCOVERY.verifyHolderTop) break verifyLoop;
           const candidate = byMint.get(item.mint);
           if (candidate && !candidate.jupiter?.holderCount) toVerify.set(candidate.mint, candidate);
         }
@@ -192,7 +192,16 @@ export function createDiscovery({ jupiter, dexscreener, gecko, goplus, db = null
     }
 
     const ranking = rankCandidates(gatedCandidates, { preset, limit });
-    const runId = db ? db.recordDiscoverRun({ startedAt, preset: preset.name, configHash: CONFIG_HASH, candidates: universe.length, accepted: ranking.accepted, rejected: ranking.rejectedCount, payload: { warnings } }) : null;
+    let runId = null;
+    if (db?.available) {
+      try {
+        runId = await db.recordDiscoverRun({ startedAt, preset: preset.name, configHash: CONFIG_HASH, candidates: universe.length, accepted: ranking.accepted, rejected: ranking.rejectedCount, payload: { warnings } });
+      } catch (error) {
+        // Pencatatan adalah upaya terbaik: kegagalan DB tidak boleh
+        // menggagalkan hasil discovery yang sudah diambil.
+        warnings.push(`Run tidak tercatat ke database: ${error?.message ?? 'kesalahan tidak dikenal'}.`);
+      }
+    }
 
     const rows = ranking.ranked.map(candidate => serializeCandidate(candidate, preset, warnings));
     return {
@@ -228,8 +237,11 @@ export function serializeCandidate(candidate, preset, warnings = []) {
   const pool = candidate.market?.pool ?? null;
   const jupiter = candidate.jupiter ?? null;
   const safety = candidate.safety ?? null;
-  const ageHours = pool?.createdAt ? (candidate.now - pool.createdAt) / 3_600_000 : null;
-  const turnover = pool?.liquidityUsd && pool?.volume?.h24 ? pool.volume.h24 / pool.liquidityUsd : null;
+  const rawAge = pool?.createdAt ? (candidate.now - pool.createdAt) / 3_600_000 : null;
+  const ageHours = rawAge !== null && Number.isFinite(rawAge) && rawAge >= 0 ? rawAge : null;
+  const poolLiquidity = pool?.liquidityUsd ?? null;
+  const poolVolume = pool?.volume?.h24 ?? null;
+  const turnover = poolLiquidity !== null && poolLiquidity > 0 && poolVolume !== null ? poolVolume / poolLiquidity : null;
   const slippage = estimateSlippage(pool?.liquidityUsd, candidate.notionalUsd ?? ENTRY.notionalUsd);
   const concentration = concentrationFor(candidate);
   const secondary = secondaryConcentration(candidate);

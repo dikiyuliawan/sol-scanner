@@ -25,19 +25,26 @@ export function parseArgs(argv) {
   const horizons = [];
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
-    if (token === '--input') args.input = argv[++index];
-    else if (token === '--db') args.db = argv[++index];
+    const value = () => {
+      const next = argv[index + 1];
+      if (next === undefined || next.startsWith('--')) throw new Error(`${token} membutuhkan nilai.`);
+      index += 1;
+      return next;
+    };
+    if (token === '--input') args.input = value();
+    else if (token === '--db') args.db = value();
     else if (token === '--horizon') {
-      const horizon = Number(argv[++index]);
+      const horizon = Number(value());
       if (!Number.isFinite(horizon) || horizon <= 0) throw new Error('--horizon harus berupa angka positif dan finite.');
       horizons.push(horizon);
     }
     else if (token === '--min-return') {
-      const minReturnPct = Number(argv[++index]);
+      const minReturnPct = Number(value());
       if (!Number.isFinite(minReturnPct)) throw new Error('--min-return harus berupa angka finite.');
       args.minReturnPct = minReturnPct;
     }
     else if (token === '--help' || token === '-h') args.help = true;
+    else throw new Error(`Opsi tidak dikenal: ${token}. Jalankan dengan --help untuk melihat daftar opsi.`);
   }
   if (horizons.length) args.horizons = [...new Set(horizons)];
   return args;
@@ -72,10 +79,10 @@ export function pairReturns(records, { horizons = DEFAULT_HORIZONS } = {}) {
     const entry = series[0];
     for (const horizon of horizons) {
       const targetAt = entry.at + horizon * 3_600_000;
-      const after = series.filter(point => point.at >= targetAt);
-      if (!after.length) { unpaired += 1; continue; }
       // Ambil snapshot pertama yang setidaknya mencapai horizon.
-      const exit = after[0];
+      const exitIndex = series.findIndex(point => point.at >= targetAt);
+      if (exitIndex === -1) { unpaired += 1; continue; }
+      const exit = series[exitIndex];
       observations.push({
         mint,
         horizon,
@@ -149,15 +156,16 @@ function printReport({ records, result, summary, args, source }) {
 async function loadRecords(args) {
   if (args.input) {
     const parsed = JSON.parse(await readFile(args.input, 'utf8'));
-    const records = Array.isArray(parsed) ? parsed : parsed.snapshots ?? [];
-    return { records, source: args.input };
+    if (Array.isArray(parsed)) return { records: parsed, source: args.input };
+    if (parsed && Array.isArray(parsed.snapshots)) return { records: parsed.snapshots, source: args.input };
+    throw new Error('Format input tidak dikenal: diharapkan array snapshot atau objek { "snapshots": [...] }.');
   }
-  const db = createDb(args.db);
+  const db = await createDb(args.db);
   if (!db.available) throw new Error(db.reason);
   try {
-    return { records: db.allSnapshots(), source: args.db };
+    return { records: await db.allSnapshots(), source: args.db };
   } finally {
-    db.close();
+    await db.close();
   }
 }
 

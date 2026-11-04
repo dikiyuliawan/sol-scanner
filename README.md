@@ -38,6 +38,19 @@ npm run diagnose
 
 Perintah ini hanya membaca: ia mengecek tiap penyedia, membedakan "reset koneksi" (blokir IP/SNI, jaringan, proxy, atau VPN) dari "HTTP 429" (kuota laju habis), dan membandingkan jawaban DNS sistem dengan IP asli dari DoH. Kalau berbeda, DNS sistem diteruskan ke proxy atau lapisan SSL-inspection/VPN yang mengembalikan alamat sendiri — penyebab paling umum tabel kosong. Tidak mengubah file atau database.
 
+## Deploy ke Vercel (personal)
+
+Scanner ini dirancang local-first; deployment ke Vercel hanya karena kebutuhan akses pribadi dari mana pun. Arsitekturnya berubah sedikit, bukan dirombak: **satu** fungsi serverless memakai handler yang sama persis dengan `npm start` (`api/[...slug].js` → `lib/handler.mjs`). Yang berubah di produksi:
+
+- **Penyimpanan jadi Turso (libSQL).** Buat akun gratis di [turso.dev](https://turso.dev), buat database, lalu set `TURSO_DATABASE_URL` dan `TURSO_AUTH_TOKEN` di Vercel → Environment Variables. Skema diterapkan dengan `npm run migrate` (idempoten; aman dijalankan berkali-kali). SQL yang dipakai sama untuk lokal dan Turso; lokal tetap `node:sqlite` tanpa konfigurasi apa pun.
+- **Deep scan diproses satu token per poll.** Fungsi serverless (batas 60 detik, lihat `vercel.json`) tidak bisa menjalankan satu run 15 token penuh seperti lokal, jadi antrean deep scan tersimpan di tabel `jobs`/`job_meta`; setiap poll `/api/jobs/:id` memproses satu token secara penuh (claim atomik, tidak mungkin diproses dua kali) dan hasilnya persisten. UI berjalan seperti biasa — yang berubah hanya tempo deep scan. Untuk progres yang maju walau browser tertutup, arahkan cron eksternal (mis. cron-job.org) ke `/api/jobs/:id` setiap menit dengan header `Authorization: Basic <base64("scanner:"+APP_PASSWORD)>` — atau biarkan tab terbuka.
+- **Basic auth di depan semua rute.** Set `APP_PASSWORD` (jangan pakai password layanan lain; HTTPS wajib dan Vercel selalu HTTPS). Browser menampilkan satu prompt login. Tanpa `APP_PASSWORD`, semua rute ditutup total (503) — fail closed, bukan terbuka.
+- **Host check tetap ada, plus `APP_ORIGIN`.** Set `APP_ORIGIN=https://<nama-app>.vercel.app` di environment agar pemeriksaan Host mengizinkan domain tersebut (loopback tetap diizinkan untuk lokal).
+- **Hobby plan = penggunaan non-komersial/personal**, sesuai batasan rencana personal Anda.
+- **Data lokal tidak ikut.** `data/scanner.db` tidak pernah di-deploy; watchlist dan histori di Vercel mulai kosong kecuali Anda memigrasikan manual.
+
+Langkah: `npm i -g vercel` → `vercel` → set tiga env var (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_PASSWORD`) + `APP_ORIGIN` → `npm run migrate` → `vercel --prod`. Deployment lama yang 500 dihapus atau di-overwrite oleh deployment ini.
+
 ## Discover: bagaimana skor dibentuk
 
 1. **Universe yang berputar, bukan daftar yang sama.** Enam sumber digabung: Jupiter top organic (1 jam & 24 jam), Jupiter trending (1 jam), **Jupiter token terbaru**, **GeckoTerminal trending pools**, dan **GeckoTerminal pool baru** (hanya untuk preset yang menerima likuiditas tipis). Kandidat dari tiap sumber **diselingi**, bukan digabung berurutan: kalau digabung berurutan, daftar pertama memakai seluruh kuota dan sumber lain tidak pernah dievaluasi. Ringkasan run menampilkan kontribusi per sumber.
@@ -56,6 +69,9 @@ Perintah ini hanya membaca: ia mengecek tiap penyedia, membedakan "reset koneksi
    - mintable/freezable/transfer fee/transfer hook/non-transferable — hanya nilai eksplisit `true` yang menolak,
    - organic label di bawah ambang, atau token belum terverifikasi bila preset mewajibkannya.
    - **Market cap yang tidak dilaporkan** tidak menggugurkan kandidat, tetapi menghasilkan peringatan `mcap_unknown`: ambang tersebut tidak dievaluasi, dan itu harus terlihat.
+   - **FDV yang tidak dilaporkan** (market cap ada, FDV tidak) menghasilkan peringatan `fdv_unknown`: gate FDV/market cap tidak dievaluasi.
+   - **Perubahan harga 24 jam yang tidak dilaporkan** menghasilkan peringatan `price_change_unknown`: gate perubahan harga tidak dievaluasi.
+   - **Label organic yang tidak dikenal** (bukan low/medium/high) tidak menggugurkan kandidat dengan alasan keliru; menghasilkan peringatan `organic_label_unknown` dan gate organic tidak dievaluasi.
 6. **Skor 5 komponen berbobot.** Skor total = rata-rata berbobot komponen yang **benar-benar terukur**, dikurangi penalti. Komponen yang belum dianalisis **dikeluarkan** dari rata-rata, bukan diberi nilai netral:
 
    | Komponen                      | Bobot | Isi utama                                                                |
@@ -118,18 +134,18 @@ Minimum **21 candle tertutup berurutan**; candle berjalan dikeluarkan. Celah int
 ## Freshness, rate limit, dan cache
 
 - Cache scan 30 detik; cache **single-flight + LRU + TTL** per origin. `refresh=1` pada `/api/discover` dan `/api/scan` melewati cache server **dan** cache sumber, jadi angka yang tampil benar-benar baru diambil.
-- Batas lokal: Jupiter 30/menit, DEX Screener 30/menit, GeckoTerminal **6/menit dengan jarak minimum 10 detik antar request**, GoPlus 20/menit dengan jarak antar-panggilan 300 ms.
+- Batas lokal: Jupiter 30/menit, DEX Screener 30/menit, GeckoTerminal **6/menit dengan jarak minimum 10 detik antar request**, GoPlus 20/menit dengan jarak antar-panggilan 300 ms, dan **Discover 10/menit dengan single-flight** (dua permintaan identik menunggu hasil yang sama, bukan menggandakan sampling upstream maupun penulisan snapshot).
 - **Batas GeckoTerminal terukur dari jaringan pengembangan:** ~4-5 request per menit aman; burst tiga request dalam hitungan detik sudah memicu 429, dan header `Retry-After` provider bernilai `"0"` sehingga tidak bisa dipakai sendiri. Karena itu aplikasi memakai batas lokal 6/menit, jarak minimum 10 detik, dan **cooldown minimum 30 detik** ketika 429 datang. Limiter bisa **menunggu** slot (`wait`) untuk pekerjaan latar, sehingga antrean deep scan tidak berubah menjadi `unknown` hanya karena kuota habis; 2-4 slot per menit dicadangkan untuk permintaan interaktif (tab Inspect).
 - **Satu client per origin.** Discover, Inspect, dan deep scan memakai instance sumber yang sama, sehingga batas laju provider dihitung satu kali untuk seluruh aplikasi — bukan sekali per modul, yang sebelumnya membuat total request GeckoTerminal bisa mencapai 16/menit dan memicu 429.
 - TTL cache sumber: Jupiter 60 detik, DEX Screener 30 detik, GeckoTerminal 60 detik, GoPlus 5 menit. **Hasil negatif GoPlus tidak pernah di-cache**: token yang baru diindeks GoPlus tidak terkunci "unknown" selama 10 menit.
 - Fase discovery memakai **satu** request GeckoTerminal (dua untuk preset yang menerima likuiditas tipis). Sisanya untuk candle deep scan, karena di sinilah kuota GeckoTerminal paling terasa.
-- Deep scan memakai satu candle Gecko + satu pengecekan pool DEX Screener + satu record GoPlus per token, dengan tempo ±13 detik per token. Satu run 15 baris selesai sekitar 3 menit; baris pertama selesai dalam ~25 detik dan seterusnya berurutan sesuai peringkat.
+- Deep scan memakai satu candle Gecko + satu pengecekan pool DEX Screener + satu record GoPlus per token, dengan tempo ±13 detik per token. Di lokal, job berjalan di latar; di Vercel (tanpa proses latar), **satu token diproses per poll** `/api/jobs/:id` — satu deep scan utuh tetap muat di dalam batas waktu fungsi serverless, dan hasilnya tercatat di database sehingga progres bertahan antar-request. Satu run 15 baris selesai sekitar 3 menit; baris pertama selesai dalam ~25 detik dan seterusnya berurutan sesuai peringkat.
 - HTTP 429 menghormati header `Retry-After` (dengan batas minimum) dan memberi cooldown per origin; slot yang gagal dikembalikan.
 - **Ketahanan terhadap penyedia yang diblokir.** Gangguan jaringan (koneksi diputus, DNS, proxy yang menahan domain) diulang satu kali; jawaban 4xx tidak diulang. Kalau sebuah penyedia gagal berulang, **pemutus arus** menjeda penyedia itu 5 menit dan pesannya menyebut penyebabnya ("Jupiter sedang tidak dihubungi (gagal berulang); jeda 300 detik") alih-alih "fetch failed". Kode penyebab jaringan (ECONNRESET, ENOTFOUND) ikut ditampilkan. Run dengan semua sumber gagal tidak pernah disamarkan sebagai "tidak ada kandidat": tabel kosong karena sumber data mati diberi pesan dan peringatan yang berbeda dari "semua kandidat gugur gate".
 - Timeout 10 detik per provider; batas UI 30 detik untuk inspect dan 90 detik untuk discover.
 - **Waktu pengambilan ditampilkan.** Ringkasan run menampilkan waktu run; tiap baris menyimpan `market.fetchedAt` (waktu data pasar diambil), `structure.lastClosedAt` (waktu penutupan candle 1 jam yang dipakai struktur dan entry plan), dan `safety.fetchedAt` (waktu data keamanan diambil). Rincian kandidat menampilkan umur masing-masing angka dan alasan kalau candle gagal. Angka tanpa waktu tidak boleh dibaca sebagai harga terkini.
 - Tidak ada polling harga atau discovery otomatis. Hanya progres job deep scan yang dipoll setiap 2 detik (maksimal 8 menit, tanpa request bertumpuk); tampilan menghitung umur lokal setiap 15 detik tanpa mengambil harga baru.
-- Struktur candle 1 jam memerlukan sedikitnya **50 candle tertutup berurutan** agar EMA50 benar-benar terukur. Data yang lebih pendek tetap `unknown`; hasil job selalu menyertakan mint agar UI dapat memasangkan pembaruan dengan token yang benar.
+- Struktur candle 1 jam memerlukan sedikitnya **50 candle tertutup berurutan** agar EMA50 benar-benar terukur. Data yang lebih pendek tetap `unknown`; hasil job selalu menyertakan mint agar UI dapat memasangkan pembaruan dengan token yang benar. ATR14 dihitung dengan pelicinan Wilder (definisi yang sama dengan RSI14), dan struktur melaporkan jumlah **gap** interval yang hilang — indikator melintasi celah, dan jumlah gap ikut ditampilkan agar terbaca.
 
 ## Keamanan kontrak: GoPlus + Jupiter, bukan RugCheck
 
@@ -143,9 +159,9 @@ Record GoPlus yang menghilangkan kontrol mint/freeze atau transfer berstatus `pa
 
 ## Snapshots, watchlist, dan SQLite
 
-Persistensi memakai **`node:sqlite`** bawaan Node (tanpa dependensi npm). Bila runtime tidak menyediakannya, scanner berjalan **stateless** dan melaporkan alasannya di `/api/config` dan `/api/health`, bukan crash.
+Persistensi memakai **SQLite** — `node:sqlite` bawaan Node secara lokal (tanpa dependensi), atau **Turso/libSQL** di produksi Vercel bila `TURSO_DATABASE_URL` dan `TURSO_AUTH_TOKEN` diset. Kedua backend mengekspos fasad yang sama; SQL yang dipakai keduanya kompatibel. Bila runtime tidak menyediakan `node:sqlite`, scanner berjalan **stateless** dan melaporkan alasannya di `/api/config` dan `/api/health`, bukan crash.
 
-Tabel: `tokens`, `snapshots`, `discover_runs`, `watchlist`, `plans`. Setiap run discover menyimpan snapshot harga/likuiditas/skor per kandidat, sehingga `npm run backtest` dapat menghitung return forward per grade dan horizon dari data yang Anda rekam sendiri. **Snapshot diperbarui setelah deep scan**: skor dan grade yang tersimpan adalah skor final (struktur 1 jam + GoPlus) yang benar-benar ditampilkan ke pengguna, bukan skor ranking awal. Tahap skor ditandai `scoreStage` (`initial` atau `deep`) supaya laporan backtest menunjukkan bahwa keduanya tidak sebanding. Database ada di `data/scanner.db` dan tidak pernah dibagikan.
+Tabel: `tokens`, `snapshots`, `discover_runs`, `watchlist`, `plans`, `jobs`, `job_meta`. Setiap run discover menyimpan snapshot harga/likuiditas/skor per kandidat, sehingga `npm run backtest` dapat menghitung return forward per grade dan horizon dari data yang Anda rekam sendiri. **Snapshot diperbarui setelah deep scan**: skor dan grade yang tersimpan adalah skor final (struktur 1 jam + GoPlus) yang benar-benar ditampilkan ke pengguna, bukan skor ranking awal. Tahap skor ditandai `scoreStage` (`initial` atau `deep`) supaya laporan backtest menunjukkan bahwa keduanya tidak sebanding. Database lokal ada di `data/scanner.db` dan tidak pernah dibagikan. Tabel dipangkas otomatis pada saat dibuka: yang disimpan adalah 5.000 `snapshots`, 2.000 `plans`, dan 500 `discover_runs` terbaru (berbasis jumlah, bukan usia — data lama tetap dipakai backtest). Penulisan snapshot per run dibungkus satu transaksi, sehingga kegagalan di tengah tidak meninggalkan setengah data. Kegagalan pencatatan tidak menggagalkan respons discover.
 
 ## API
 
@@ -171,13 +187,18 @@ Mint yang dipindai dikirim ke DEX Screener, GeckoTerminal, GoPlus, dan Jupiter. 
 ## File proyek
 
 - `config.mjs`: preset, bobot skor, ambang gate, batas laju, config hash.
-- `server.mjs`: server loopback, routing, validasi, job deep scan, cache discover.
+- `server.mjs`: wrapper loopback (`npm start`); routing, job deep scan, dan cache hidup di `lib/handler.mjs`.
+- `lib/handler.mjs`: router, validasi, single-flight, job deep scan (satu token per poll di DB, atau in-memory sebagai fallback), cache discover.
+- `api/[...slug].js`: satu-satunya fungsi serverless Vercel; handler yang sama dengan lokal.
+- `middleware.js`: basic auth di depan semua rute (khusus Vercel; lokal tidak memakainya).
 - `discover.mjs`: orkestrasi universe → pre-filter → batch → gate → skor → deep scan.
 - `sources/`: adapter `jupiter`, `dexscreener`, `gecko`, `goplus` (normalisasi + provenance).
 - `screen/`: `gates`, `score`, `rank`, `provenance` — fungsi murni tanpa I/O.
 - `analysis/`: `candles` (EMA/ATR/RSI/struktur) dan `entryplan`.
-- `lib/`: `http`, `cache`, `limiter`, `provenance`.
-- `db.mjs`, `jobs.mjs`, `backtest.mjs`: SQLite, antrean job, forward-test.
+- `lib/`: `http`, `cache`, `limiter`, `provenance`, `handler`.
+- `db.mjs`: SQLite ganda — `node:sqlite` lokal (bawaan Node) dan Turso/libSQL di produksi; tabel `tokens`, `snapshots`, `discover_runs`, `watchlist`, `plans`, `jobs`, `job_meta`.
+- `jobs.mjs`: antrean job in-memory (fallback ketika storage tidak tersedia atau job disuntikkan secara eksplisit, mis. tes).
+- `backtest.mjs`: forward-test offline.
 - `signals.mjs`, `history.mjs`, `risk.mjs`: jalur Inspect (15 menit, GeckoTerminal, GoPlus).
 - `public/`: antarmuka tanpa dependensi eksternal.
 - `test/`: regresi murni dan integrasi HTTP; fixture sintetis hanya untuk tes.

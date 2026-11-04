@@ -6,25 +6,38 @@
 
 export function ema(values, period) {
   if (!Array.isArray(values) || values.length < period || period < 1) return null;
+  if (!values.every(value => typeof value === 'number' && Number.isFinite(value))) return null;
   const k = 2 / (period + 1);
   let value = values.slice(0, period).reduce((sum, item) => sum + item, 0) / period;
   for (let index = period; index < values.length; index += 1) value = values[index] * k + value * (1 - k);
   return value;
 }
 
+/**
+ * ATR dengan pelicinan Wilder (definisi asli Wilder, sama dengan RSI di
+ * modul ini): seed SMA dari `period` true range pertama, lalu rekursif
+ * (prev * (period - 1) + TR) / period.
+ */
 export function atr(candles, period = 14) {
   if (!Array.isArray(candles) || candles.length <= period) return null;
   const ranges = [];
   for (let index = 1; index < candles.length; index += 1) {
     const current = candles[index], previous = candles[index - 1];
+    const values = [current.high, current.low, current.close, previous.close];
+    if (!values.every(value => typeof value === 'number' && Number.isFinite(value))) return null;
     ranges.push(Math.max(current.high - current.low, Math.abs(current.high - previous.close), Math.abs(current.low - previous.close)));
   }
-  const window = ranges.slice(-period);
-  return window.reduce((sum, value) => sum + value, 0) / window.length;
+  if (ranges.length < period) return null;
+  let value = ranges.slice(0, period).reduce((sum, item) => sum + item, 0) / period;
+  for (let index = period; index < ranges.length; index += 1) {
+    value = (value * (period - 1) + ranges[index]) / period;
+  }
+  return value;
 }
 
 export function rsi(candles, period = 14) {
   if (!Array.isArray(candles) || candles.length <= period) return null;
+  if (!candles.every(candle => [candle.close].every(value => typeof value === 'number' && Number.isFinite(value)))) return null;
   let gains = 0, losses = 0;
   for (let index = 1; index <= period; index += 1) {
     const change = candles[index].close - candles[index - 1].close;
@@ -91,6 +104,13 @@ export function analyzeStructure(candles, { intervalSeconds = 3600 } = {}) {
   const low20 = Math.min(...prior.map(candle => candle.low));
   const pivots = findPivots(candles.slice(-60), 3);
   const lastHighs = pivots.highs.slice(-2), lastLows = pivots.lows.slice(-2);
+  // Celah interval dihitung dan dilaporkan: EMA/ATR/RSI melintasi celah
+  // diam-diam, dan pemanggil harus tahu kalau candle tidak berurutan.
+  let gaps = 0;
+  for (let index = 1; index < candles.length; index += 1) {
+    const delta = (candles[index].time - candles[index - 1].time) / intervalSeconds;
+    if (delta > 1) gaps += Math.round(delta) - 1;
+  }
   // Data monoton murni bisa menghasilkan kurang dari dua pivot; fallback ke
   // perbandingan dua window high/low terakhir, bukan menebak true/false.
   const recentWindow = candles.slice(-21, -1);
@@ -126,10 +146,13 @@ export function analyzeStructure(candles, { intervalSeconds = 3600 } = {}) {
     high20,
     low20,
     distanceToHighPct: (high20 - latest.close) / high20 * 100,
-    distanceToLowPct: (latest.close - low20) / latest.close * 100,
+    // Sama-sama "jarak dari ujung rentang", memakai bentuk acuan yang sama
+    // (ujung rentang sebagai penyebut) supaya kedua angka sebanding.
+    distanceToLowPct: low20 > 0 ? (latest.close - low20) / low20 * 100 : null,
     trend,
     higherHigh,
     higherLow,
+    gaps,
     change24hPct: candles.length > 24 ? (latest.close / candles.at(-25).close - 1) * 100 : null,
     lastClosedAt: new Date((latest.time + intervalSeconds) * 1000).toISOString()
   };

@@ -70,7 +70,7 @@ async function withServer(t, server) {
 
 test('discover menggabungkan universe, menjalankan gate, dan mengembalikan baris ter-rank', async () => {
   const sources = fakeSources({ pool: healthyPool });
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   const discovery = createDiscovery({ ...sources, db, clock: () => NOW });
   const result = await discovery({ preset: 'balanced', limit: 10, skipDeep: true });
   assert.equal(result.preset.name, 'balanced');
@@ -131,7 +131,7 @@ test('deep scan melengkapi struktur dan rencana entry lewat job', async t => {
     candles: hourlyCandles(),
     security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
   });
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   const jobs = createJobs({ clock: () => NOW });
   const server = createServer({ ...sources, db, jobs, clock: () => NOW });
   const base = await withServer(t, server);
@@ -149,7 +149,7 @@ test('deep scan melengkapi struktur dan rencana entry lewat job', async t => {
 
 test('discover mengembalikan cached true pada permintaan kedua dalam 60 detik', async t => {
   const sources = fakeSources({ pool: healthyPool });
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   const server = createServer({ ...sources, db, clock: () => NOW });
   const base = await withServer(t, server);
   const first = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
@@ -167,7 +167,7 @@ test('discover mengembalikan cached true pada permintaan kedua dalam 60 detik', 
 
 test('discover menolak preset tidak dikenal dengan fallback balanced', async t => {
   const sources = fakeSources({ pool: healthyPool });
-  const server = createServer({ ...sources, db: createDb(':memory:'), clock: () => NOW });
+  const server = createServer({ ...sources, db: await createDb(':memory:'), clock: () => NOW });
   const base = await withServer(t, server);
   const data = await (await fetch(`${base}/api/discover?preset=ngawur`)).json();
   assert.equal(data.preset.name, 'balanced');
@@ -175,7 +175,7 @@ test('discover menolak preset tidak dikenal dengan fallback balanced', async t =
 
 test('watchlist POST/GET/DELETE memakai SQLite lokal dan menolak mint invalid', async t => {
   const sources = fakeSources({ pool: healthyPool });
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   const server = createServer({ ...sources, db, clock: () => NOW });
   const base = await withServer(t, server);
 
@@ -208,7 +208,7 @@ test('watchlist POST/GET/DELETE memakai SQLite lokal dan menolak mint invalid', 
 
 test('riwayat snapshot tersimpan per mint dan dapat dibaca kembali', async t => {
   const sources = fakeSources({ pool: healthyPool });
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   const server = createServer({ ...sources, db, clock: () => NOW });
   const base = await withServer(t, server);
   await (await fetch(`${base}/api/discover?preset=balanced&limit=5`)).json();
@@ -220,7 +220,7 @@ test('riwayat snapshot tersimpan per mint dan dapat dibaca kembali', async t => 
 });
 
 test('config endpoint mengekspos hash, preset, dan status storage', async t => {
-  const server = createServer({ ...fakeSources(), db: createDb(':memory:'), clock: () => NOW });
+  const server = createServer({ ...fakeSources(), db: await createDb(':memory:'), clock: () => NOW });
   const base = await withServer(t, server);
   const data = await (await fetch(`${base}/api/config`)).json();
   assert.equal(data.configHash.length, 12);
@@ -229,13 +229,13 @@ test('config endpoint mengekspos hash, preset, dan status storage', async t => {
 });
 
 test('job tidak dikenal menghasilkan 404, bukan hasil kosong', async t => {
-  const server = createServer({ ...fakeSources(), db: createDb(':memory:'), clock: () => NOW });
+  const server = createServer({ ...fakeSources(), db: await createDb(':memory:'), clock: () => NOW });
   const base = await withServer(t, server);
   assert.equal((await fetch(`${base}/api/jobs/tidak-ada`)).status, 404);
 });
 
 test('db tanpa node:sqlite tetap melaporkan mode stateless, bukan crash', async () => {
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   assert.equal(typeof db.available, 'boolean');
   db.close();
 });
@@ -317,7 +317,7 @@ test('deep scan memakai pool utama provider dan memperbarui data pasar baris', a
     pool: { ...healthyPool, poolAddress: 'Poo2222222222222222222222222222222222222222', liquidityUsd: 900_000, priceUsd: 0.6 },
     reason: null
   });
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   const server = createServer({ ...sources, db, jobs: createJobs({ clock: () => NOW }), clock: () => NOW });
   const base = await withServer(t, server);
   const data = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
@@ -336,7 +336,7 @@ test('snapshot memakai skor final setelah deep scan, bukan skor awal', async t =
     candles: hourlyCandles(),
     security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
   });
-  const db = createDb(':memory:');
+  const db = await createDb(':memory:');
   const server = createServer({ ...sources, db, jobs: createJobs({ clock: () => NOW }), clock: () => NOW });
   const base = await withServer(t, server);
   const data = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
@@ -355,7 +355,7 @@ test('cache discover mengembalikan hasil final deep scan pada permintaan berikut
     candles: hourlyCandles(),
     security: { status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 18, holderCount: 6000, lpHolderPct: 40, transferFee: false, transferHook: false, metadataMutable: false } }
   });
-  const server = createServer({ ...sources, db: createDb(':memory:'), jobs: createJobs({ clock: () => NOW }), clock: () => NOW });
+  const server = createServer({ ...sources, db: await createDb(':memory:'), jobs: createJobs({ clock: () => NOW }), clock: () => NOW });
   const base = await withServer(t, server);
   const first = await (await fetch(`${base}/api/discover?preset=balanced`)).json();
   await new Promise(resolve => setTimeout(resolve, 150));
@@ -371,7 +371,7 @@ test('refresh=1 melewati cache discover dan cache sumber', async t => {
   const sources = fakeSources({ pool: healthyPool });
   const original = sources.dexscreener.batch.bind(sources.dexscreener);
   sources.dexscreener.batch = async (...args) => { batches += 1; return original(...args); };
-  const server = createServer({ ...sources, db: createDb(':memory:'), clock: () => NOW });
+  const server = createServer({ ...sources, db: await createDb(':memory:'), clock: () => NOW });
   const base = await withServer(t, server);
   await (await fetch(`${base}/api/discover?preset=balanced`)).json();
   const cached = await (await fetch(`${base}/api/discover?preset=balanced`)).json();

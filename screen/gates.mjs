@@ -33,11 +33,14 @@ export function evaluateGates(candidate, preset) {
     check(rejections, 'volume_low', pool.volume?.h24 !== null && pool.volume?.h24 >= preset.minVolume24hUsd,
       `Volume 24 jam USD ${pool.volume?.h24 ?? 'unknown'} di bawah ambang ${preset.minVolume24hUsd}.`);
 
-    const ageHours = pool.createdAt ? (candidate.now - pool.createdAt) / 3_600_000 : null;
+    const rawAge = pool.createdAt ? (candidate.now - pool.createdAt) / 3_600_000 : null;
+    const ageHours = rawAge !== null && Number.isFinite(rawAge) && rawAge >= 0 ? rawAge : null;
     check(rejections, 'pool_too_new', ageHours !== null && ageHours >= preset.minPoolAgeHours,
       `Usia pool ${ageHours === null ? 'unknown' : `${ageHours.toFixed(1)} jam`} di bawah ambang ${preset.minPoolAgeHours} jam.`);
 
-    const turnover = pool.liquidityUsd && pool.volume?.h24 ? pool.volume.h24 / pool.liquidityUsd : null;
+    const liquidityUsd = pool.liquidityUsd ?? null;
+    const volumeH24 = pool.volume?.h24 ?? null;
+    const turnover = liquidityUsd !== null && liquidityUsd > 0 && volumeH24 !== null ? volumeH24 / liquidityUsd : null;
     check(rejections, 'turnover_low', turnover !== null && turnover >= preset.minTurnover,
       `Turnover 24 jam ${turnover === null ? 'unknown' : `${turnover.toFixed(2)}x`} di bawah ambang ${preset.minTurnover}x.`);
     check(rejections, 'turnover_high', turnover === null || turnover <= preset.maxTurnover,
@@ -55,12 +58,20 @@ export function evaluateGates(candidate, preset) {
       const ratio = pool.fdv / pool.marketCap;
       check(rejections, 'fdv_ratio', ratio <= preset.maxFdvToMcap,
         `FDV/market cap ${ratio.toFixed(2)}x di atas ambang ${preset.maxFdvToMcap}x; suplai belum beredar besar.`);
+    } else if (pool.marketCap && !pool.fdv) {
+      // FDV tidak dilaporkan: gate FDV/market cap tidak bisa dievaluasi.
+      // Dicatat sebagai peringatan, bukan lolos diam-diam.
+      warnings.push({ code: 'fdv_unknown', severity: 'warn', reason: 'FDV tidak dilaporkan sumber untuk pool ini; gate FDV/market cap tidak dievaluasi. Unknown bukan berarti cukup.' });
     }
     if (pool.change?.h24 != null) {
       check(rejections, 'price_change_24h_low', pool.change.h24 >= preset.minPriceChange24hPct,
         `Perubahan 24 jam ${pool.change.h24.toFixed(1)}% di bawah batas ${preset.minPriceChange24hPct}%; hindari token yang sedang jatuh tajam.`);
       check(rejections, 'pump_24h', pool.change.h24 <= preset.maxPriceChange24hPct,
         `Perubahan 24 jam +${pool.change.h24.toFixed(1)}% melewati ambang ${preset.maxPriceChange24hPct}%; hindari mengejar.`);
+    } else {
+      // Perubahan harga tidak dilaporkan: gate perubahan 24 jam tidak bisa
+      // dievaluasi dan harus terlihat, sama seperti market cap unknown.
+      warnings.push({ code: 'price_change_unknown', severity: 'warn', reason: 'Perubahan harga 24 jam tidak dilaporkan sumber untuk pool ini; gate perubahan harga tidak dievaluasi. Unknown bukan berarti aman.' });
     }
   }
 
@@ -113,14 +124,22 @@ export function evaluateGates(candidate, preset) {
   if (preset.requireVerified && jupiter && jupiter.isVerified !== true) {
     rejections.push({ code: 'unverified', severity: 'reject', reason: 'Token belum terverifikasi dan preset ini mewajibkannya.' });
   }
-  if (jupiter?.organicLabel && labelRank(jupiter.organicLabel) < labelRank(preset.minOrganicLabel)) {
-    rejections.push({ code: 'organic_low', severity: 'reject', reason: `Organic score ${jupiter.organicLabel} di bawah ambang ${preset.minOrganicLabel}.` });
+  if (jupiter?.organicLabel) {
+    const label = labelRank(jupiter.organicLabel);
+    const minimum = labelRank(preset.minOrganicLabel);
+    if (label === -1) {
+      // Label yang tidak dikenal bukan berarti di bawah ambang; perlakukan
+      // sebagai unknown dan tampilkan, jangan gugurkan dengan alasan palsu.
+      warnings.push({ code: 'organic_label_unknown', severity: 'warn', reason: `Label organic Jupiter "${jupiter.organicLabel}" tidak dikenal aplikasi; gate organic tidak dievaluasi.` });
+    } else if (label < minimum) {
+      rejections.push({ code: 'organic_low', severity: 'reject', reason: `Organic score ${jupiter.organicLabel} di bawah ambang ${preset.minOrganicLabel}.` });
+    }
   }
 
   // Peringatan yang tidak menggugurkan kandidat, tetapi harus terlihat.
   if (pool?.createdAt) {
     const ageHours = (candidate.now - pool.createdAt) / 3_600_000;
-    if (ageHours < 24) warnings.push({ code: 'young_pool', severity: 'warn', reason: `Pool berusia ${ageHours.toFixed(1)} jam; riwayat pendek.` });
+    if (Number.isFinite(ageHours) && ageHours >= 0 && ageHours < 24) warnings.push({ code: 'young_pool', severity: 'warn', reason: `Pool berusia ${ageHours.toFixed(1)} jam; riwayat pendek.` });
   }
   if (pool?.marketCap && pool.fdv && pool.fdv / pool.marketCap > 2) {
     warnings.push({ code: 'fdv_gap', severity: 'warn', reason: `FDV ${(pool.fdv / pool.marketCap).toFixed(2)}x market cap; banyak suplai belum beredar.` });

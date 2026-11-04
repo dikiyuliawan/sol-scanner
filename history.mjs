@@ -23,7 +23,9 @@ export function normalizeHistory(data, mint, primary, now = Date.now()) {
   }
   const rows = data?.candles;
   if (!Array.isArray(rows)) throw new Error('Skema ohlcv_list tidak valid');
-  return analyzeCandles(rows, { now });
+  // Toleran: satu baris rusak tidak membatalkan seluruh analisis 15 menit;
+  // baris itu dibuang dan tercatat di droppedRows.
+  return analyzeCandles(rows, { now, tolerant: true });
 }
 
 /**
@@ -62,7 +64,7 @@ export function createHistoryProvider({ gecko = createGeckoSource(), clock = Dat
       } catch (e) {
         return unknownHistory(`Candle unknown: ${e.name === 'TimeoutError' ? 'batas waktu 10 detik' : e.message}. Tidak ada sinyal breakout yang disimpulkan.`, { ...base, attemptedAt: new Date(clock()).toISOString() });
       }
-    })().finally(() => inFlight.delete(key));
+    })().finally(() => { if (inFlight.get(key) === promise) inFlight.delete(key); });
     inFlight.set(key, promise);
     return promise;
   };

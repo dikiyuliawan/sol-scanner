@@ -80,8 +80,10 @@ export function createGeckoSource({ fetcher = fetch, clock = Date.now, minGapMs 
       breaker.recordSuccess();
       return data;
     } catch (error) {
-      limiter.refund('gecko');
-      if (error.transient) breaker.recordFailure();
+      // Hanya kegagalan jaringan (request kemungkinan tidak sampai ke origin)
+      // yang mengembalikan slot; respons HTTP berarti origin sudah bekerja.
+      if (error.transient) limiter.refund('gecko', decision.slot);
+      if (error.transient || (error.status ?? 0) >= 500) breaker.recordFailure();
       // Retry-After dari GeckoTerminal bernilai "0", jadi cooldown minimum
       // dipakai agar satu 429 tidak langsung menimpa permintaan berikutnya.
       if (error.status === 429) limiter.cooldown('gecko', Math.max(error.retryAfterMs ?? 0, 30_000));
@@ -90,17 +92,17 @@ export function createGeckoSource({ fetcher = fetch, clock = Date.now, minGapMs 
   }
 
   async function get(path, { refresh = false, wait = false, maxWaitMs } = {}) {
-    const { value } = await cache.resolve(path, () => request(path, { wait, maxWaitMs }), { bypass: refresh });
-    return value;
+    return cache.resolve(path, () => request(path, { wait, maxWaitMs }), { bypass: refresh });
   }
 
   return {
     name: 'GeckoTerminal',
     docs: GECKO_DOCS,
     async trending(page = 1, { refresh = false } = {}) {
-      const fetchedAt = new Date(clock()).toISOString();
+      let fetchedAt = new Date(clock()).toISOString();
       try {
-        const data = await get(`/networks/solana/trending_pools?page=${Math.max(1, page)}`, { refresh });
+        const { value: data, at } = await get(`/networks/solana/trending_pools?page=${Math.max(1, page)}`, { refresh });
+        fetchedAt = new Date(at).toISOString();
         if (!Array.isArray(data?.data)) throw new Error('skema trending_pools tidak valid');
         return { status: 'available', source: 'GeckoTerminal', fetchedAt, pools: data.data.map(raw => normalizeTrendingPool(raw, fetchedAt)).filter(Boolean), reason: null };
       } catch (error) {
@@ -108,9 +110,10 @@ export function createGeckoSource({ fetcher = fetch, clock = Date.now, minGapMs 
       }
     },
     async newPools(page = 1, { refresh = false } = {}) {
-      const fetchedAt = new Date(clock()).toISOString();
+      let fetchedAt = new Date(clock()).toISOString();
       try {
-        const data = await get(`/networks/solana/new_pools?page=${Math.max(1, page)}`, { refresh });
+        const { value: data, at } = await get(`/networks/solana/new_pools?page=${Math.max(1, page)}`, { refresh });
+        fetchedAt = new Date(at).toISOString();
         if (!Array.isArray(data?.data)) throw new Error('skema new_pools tidak valid');
         return { status: 'available', source: 'GeckoTerminal', fetchedAt, pools: data.data.map(raw => normalizeTrendingPool(raw, fetchedAt)).filter(Boolean), reason: null };
       } catch (error) {
@@ -125,14 +128,15 @@ export function createGeckoSource({ fetcher = fetch, clock = Date.now, minGapMs 
      * tersedia (dengan kuota interaktif yang dicadangkan) alih-alih gagal.
      */
     async candles(pool, mint, { granularity = 'hour', aggregate = 1, limit = 200, refresh = false, background = false } = {}) {
-      const fetchedAt = new Date(clock()).toISOString();
+      let fetchedAt = new Date(clock()).toISOString();
       if (typeof pool !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(pool)) {
         return { status: 'unknown', source: 'GeckoTerminal', fetchedAt, candles: [], meta: null, reason: 'Alamat pool tidak valid; candle tidak diminta.' };
       }
       const token = typeof mint === 'string' && mint ? `&token=${mint}` : '';
       const path = `/networks/solana/pools/${pool}/ohlcv/${granularity}?aggregate=${aggregate}&limit=${Math.min(1000, Math.max(1, limit))}&currency=usd${token}&include_empty_intervals=true`;
       try {
-        const data = await get(path, { refresh, wait: background });
+        const { value: data, at } = await get(path, { refresh, wait: background });
+        fetchedAt = new Date(at).toISOString();
         const rows = data?.data?.attributes?.ohlcv_list;
         if (!Array.isArray(rows)) throw new Error('skema ohlcv_list tidak valid');
         return { status: 'available', source: 'GeckoTerminal', fetchedAt, candles: rows, meta: data?.meta ?? null, timeframe: `${aggregate}${granularity === 'hour' ? 'h' : 'm'}`, reason: null };

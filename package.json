@@ -1,14 +1,20 @@
 {
   "name": "solana-paper-scanner",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Local read-only Solana token discovery and ranking scanner; no wallet, no private key, no transactions",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
     "backtest": "node backtest.mjs",
-    "diagnose": "node scripts/diagnose.mjs"
+    "diagnose": "node scripts/diagnose.mjs",
+    "migrate": "node scripts/migrate.mjs"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0"
   }
 }

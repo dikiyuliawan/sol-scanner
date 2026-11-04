@@ -102,7 +102,7 @@ export function scoreLiquidity(candidate, preset) {
   const liqScore = ramp(pool.liquidityUsd, preset.minLiquidityUsd, preset.minLiquidityUsd * 20);
   evidence.push({ metric: 'Likuiditas pool', value: pool.liquidityUsd === null ? 'unknown' : `$${Math.round(pool.liquidityUsd).toLocaleString('en-US')}`, source: poolSource });
 
-  const turnover = pool.liquidityUsd && pool.volume?.h24 ? pool.volume.h24 / pool.liquidityUsd : null;
+  const turnover = pool.liquidityUsd !== null && pool.liquidityUsd !== undefined && pool.liquidityUsd > 0 && pool.volume?.h24 != null ? pool.volume.h24 / pool.liquidityUsd : null;
   const turnoverScore = band(turnover, preset.minTurnover, 0.5, 4, preset.maxTurnover);
   evidence.push({ metric: 'Turnover 24 jam', value: turnover === null ? 'unknown' : `${turnover.toFixed(2)}x`, source: poolSource });
 
@@ -197,7 +197,14 @@ export function scoreStructure(candidate) {
   const proximity = structure.distanceToHighPct === null ? null : band(structure.distanceToHighPct, -20, -3, 1.5, 12);
   const rsiScore = structure.rsi14 === null ? null : band(structure.rsi14, 15, 40, 65, 88);
   const atrScore = structure.atrPct === null ? null : band(structure.atrPct, 0.2, 1, 6, 20);
-  const sequence = structure.higherHigh && structure.higherLow ? 100 : structure.higherLow ? 65 : structure.higherHigh ? 45 : 20;
+  // Unknown bukan 20: kalau urutan tidak bisa dinilai, komponen ini
+  // dikeluarkan dari rata-rata, bukan menghukum kandidat.
+  const { higherHigh, higherLow } = structure;
+  let sequence = null;
+  if (higherHigh === true && higherLow === true) sequence = 100;
+  else if (higherLow === true) sequence = 65;
+  else if (higherHigh === true) sequence = 45;
+  else if (higherHigh === false && higherLow === false) sequence = 20;
   const parts = [trendScore, proximity, rsiScore, atrScore, sequence].filter(value => value !== null);
   return component('structure', 'Struktur & kualitas entry', SCORE_WEIGHTS.structure, parts.length ? avg(parts) : null, evidence);
 }
@@ -227,11 +234,12 @@ export function penaltiesFor(candidate, preset) {
   const pool = candidate.market?.pool;
   if (!pool) return penalties;
   const ageHours = pool.createdAt ? (candidate.now - pool.createdAt) / 3_600_000 : null;
-  if (ageHours !== null && ageHours < 24) penalties.push({ code: 'young_pool', points: 8, reason: `Pool ${ageHours.toFixed(1)} jam; riwayat pendek.` });
+  if (ageHours !== null && Number.isFinite(ageHours) && ageHours >= 0 && ageHours < 24) penalties.push({ code: 'young_pool', points: 8, reason: `Pool ${ageHours.toFixed(1)} jam; riwayat pendek.` });
   if (pool.marketCap && pool.fdv && pool.fdv / pool.marketCap > 2) {
     penalties.push({ code: 'fdv_gap', points: 5, reason: `FDV ${(pool.fdv / pool.marketCap).toFixed(2)}x market cap.` });
   }
-  if (pool.change?.h24 != null && pool.change.h24 > 150) penalties.push({ code: 'pump_24h', points: 8, reason: `Sudah naik ${pool.change.h24.toFixed(0)}% dalam 24 jam.` });
+  const maxPump = preset?.maxPriceChange24hPct ?? 150;
+  if (pool.change?.h24 != null && pool.change.h24 > maxPump) penalties.push({ code: 'pump_24h', points: 8, reason: `Sudah naik ${pool.change.h24.toFixed(0)}% dalam 24 jam.` });
   const safetyFields = candidate.safety?.security;
   const safetyUnknown = candidate.safety?.status !== 'available' || !safetyFields
     || ['mintable', 'freezable', 'nonTransferable', 'transferFee', 'transferHook'].some(key => safetyFields[key] == null);

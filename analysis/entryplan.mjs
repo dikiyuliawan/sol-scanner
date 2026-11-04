@@ -61,6 +61,11 @@ export function buildEntryPlan(structure, {
     entryHigh = ema20 + zoneHalf;
   }
 
+  if (!(entryLow <= entryHigh)) {
+    // Zona terbalik (batas bawah di atas batas atas) bisa terjadi saat
+    // harga melonjak jauh dari EMA20; rencana tidak dibuat, bukan dipaksa.
+    return { status: 'no_plan', setup, reason: 'Zona entry tidak valid (batas bawah di atas batas atas); rencana tidak dibuat.', slippagePct };
+  }
   const entryMid = (entryLow + entryHigh) / 2;
   // Invalidasi = satu ATR di bawah zona entry. Bukan level struktural yang
   // bisa jauh (low20 sering sangat dalam), sehingga risiko tetap terukur dan

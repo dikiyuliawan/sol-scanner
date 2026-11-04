@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
 /**
- * Antrean deep scan in-memory. Job sengaja tidak dipersistensi: hasilnya
- * hanya melengkapi satu run discovery yang sedang dilihat.
+ * Antrean deep scan in-memory — dipakai sebagai fallback bila storage tidak
+ * tersedia atau job disuntikkan eksplisit (mis. tes). Defaultnya handler
+ * memakai antrean persisten di tabel `jobs` (satu token per poll).
  */
 export function createJobs({ concurrency = 2, ttlMs = 10 * 60_000, clock = Date.now } = {}) {
   const jobs = new Map();
@@ -38,7 +39,8 @@ export function createJobs({ concurrency = 2, ttlMs = 10 * 60_000, clock = Date.
         })
         .finally(() => {
           running -= 1;
-          if (job.completed >= job.total) {
+          // Job yang dibatalkan tetap 'cancelled', bukan kembali 'done'.
+          if (job.status !== 'cancelled' && job.completed >= job.total) {
             job.status = 'done';
             job.finishedAt = new Date(clock()).toISOString();
           }
@@ -62,6 +64,11 @@ export function createJobs({ concurrency = 2, ttlMs = 10 * 60_000, clock = Date.
         finishedAt: null,
         results: []
       };
+      if (items.length === 0) {
+        // Job kosong harus langsung selesai, bukan menggantung 'queued' selamanya.
+        job.status = 'done';
+        job.finishedAt = new Date(clock()).toISOString();
+      }
       jobs.set(id, job);
       for (const item of items) queue.push({ jobId: id, item, worker });
       pump();

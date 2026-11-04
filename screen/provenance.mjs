@@ -35,11 +35,3 @@ export function secondaryConcentration(candidate) {
   return { value: goPlus, source: 'GoPlus' };
 }
 
-/**
- * Sumber sebenarnya dari sebuah nilai: nilai yang diambil dari sumber
- * lain harus tetap menyebut sumber aslinya, bukan sumber bawaan.
- */
-export function sourceLabel(value, primary, fallback) {
-  if (value === null || value === undefined) return fallback;
-  return value === primary ? primary : fallback;
-}

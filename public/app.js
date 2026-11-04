@@ -357,7 +357,9 @@ function pollJob(jobId, total) {
   const tick = async () => {
     let job;
     try {
-      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { signal: AbortSignal.timeout(10000), cache: 'no-store' });
+      // Satu poll mungkin memproses satu token secara sinkron (13–25 detik,
+      // termasuk jarak minimum GeckoTerminal), jadi timeout harus > itu.
+      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { signal: AbortSignal.timeout(45_000), cache: 'no-store' });
       job = await response.json();
       if (!response.ok || job.error) throw new Error(job.error || `HTTP ${response.status}`);
     } catch (error) {
