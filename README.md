@@ -40,7 +40,7 @@ Perintah ini hanya membaca: ia mengecek tiap penyedia, membedakan "reset koneksi
 
 ## Deploy ke Vercel (personal)
 
-Scanner ini dirancang local-first; deployment ke Vercel hanya karena kebutuhan akses pribadi dari mana pun. Arsitekturnya berubah sedikit, bukan dirombak: **satu** fungsi serverless memakai handler yang sama persis dengan `npm start` (`api/[...slug].js` → `lib/handler.mjs`). Yang berubah di produksi:
+Scanner ini dirancang local-first; deployment ke Vercel hanya karena kebutuhan akses pribadi dari mana pun. Arsitekturnya berubah sedikit, bukan dirombak: **satu** fungsi serverless memakai handler yang sama persis dengan `npm start` (`server.mjs` → `lib/handler.mjs`). Yang berubah di produksi:
 
 - **Penyimpanan jadi Turso (libSQL).** Buat akun gratis di [turso.dev](https://turso.dev), buat database, lalu set `TURSO_DATABASE_URL` dan `TURSO_AUTH_TOKEN` di Vercel → Environment Variables. Skema diterapkan dengan `npm run migrate` (idempoten; aman dijalankan berkali-kali). SQL yang dipakai sama untuk lokal dan Turso; lokal tetap `node:sqlite` tanpa konfigurasi apa pun.
 - **Deep scan diproses satu token per poll.** Fungsi serverless (batas 60 detik, lihat `vercel.json`) tidak bisa menjalankan satu run 15 token penuh seperti lokal, jadi antrean deep scan tersimpan di tabel `jobs`/`job_meta`; setiap poll `/api/jobs/:id` memproses satu token secara penuh (claim atomik, tidak mungkin diproses dua kali) dan hasilnya persisten. UI berjalan seperti biasa — yang berubah hanya tempo deep scan. Untuk progres yang maju walau browser tertutup, arahkan cron eksternal (mis. cron-job.org) ke `/api/jobs/:id` setiap menit dengan header `Authorization: Basic <base64("scanner:"+APP_PASSWORD)>` — atau biarkan tab terbuka.
@@ -187,9 +187,8 @@ Mint yang dipindai dikirim ke DEX Screener, GeckoTerminal, GoPlus, dan Jupiter. 
 ## File proyek
 
 - `config.mjs`: preset, bobot skor, ambang gate, batas laju, config hash.
-- `server.mjs`: wrapper loopback (`npm start`); routing, job deep scan, dan cache hidup di `lib/handler.mjs`.
+- `server.mjs`: wrapper loopback (`npm start`) **dan** fungsi serverless Vercel (default export); routing, job deep scan, dan cache hidup di `lib/handler.mjs`.
 - `lib/handler.mjs`: router, validasi, single-flight, job deep scan (satu token per poll di DB, atau in-memory sebagai fallback), cache discover.
-- `api/[...slug].js`: satu-satunya fungsi serverless Vercel; handler yang sama dengan lokal.
 - `middleware.js`: basic auth di depan semua rute (khusus Vercel; lokal tidak memakainya).
 - `discover.mjs`: orkestrasi universe → pre-filter → batch → gate → skor → deep scan.
 - `sources/`: adapter `jupiter`, `dexscreener`, `gecko`, `goplus` (normalisasi + provenance).

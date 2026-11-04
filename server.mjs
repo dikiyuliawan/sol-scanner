@@ -7,17 +7,25 @@ export { DEX_DOCS, validMint, number, normalizeMarket, fetchMarket, createMarket
 export { createHandler };
 
 /**
- * Router lokal (npm start). Handler yang sama dipakai oleh Vercel
- * (api/index.js), jadi perilaku lokal dan produksi identik.
+ * Router lokal (npm start) dan fungsi serverless Vercel memakai handler yang
+ * sama persis. Vercel mendeteksi berkas root `server.mjs` sebagai fungsi
+ * (pola "server file"), jadi `export default` di bawah ini wajib ada — tanpanya
+ * cold start mati dengan FUNCTION_INVOCATION_FAILED.
  */
 export function createServer(options = {}) {
   return http.createServer(createHandler(options));
 }
 
+/** Default export = handler Vercel. DB dibuat sekali per cold start. */
+let vercelHandler = null;
+export default async function handler(req, res) {
+  if (!vercelHandler) vercelHandler = createHandler({ db: await createDb() });
+  return vercelHandler(req, res);
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 3000);
-  const db = await createDb();
-  const server = createServer({ db });
+  const server = createServer({ db: await createDb() });
   server.listen(port, '127.0.0.1', () => console.log(`Solana scanner read-only: http://127.0.0.1:${port}`));
   const shutdown = () => server.close(() => process.exit(0));
   process.on('SIGINT', shutdown);

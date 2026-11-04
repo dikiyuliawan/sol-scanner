@@ -21,7 +21,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      # Tidak ada dependensi npm: proyek ini sengaja tanpa node_modules.
+      - name: Install dependencies
+        run: npm install
       - name: Periksa sintaks semua berkas .mjs dan entry Vercel
         run: |
           find . -name node_modules -prune -o \( -name '*.mjs' -o -name '*.js' \) -print0 | xargs -0 -n1 node --check

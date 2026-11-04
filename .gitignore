@@ -19,3 +19,6 @@ job*.tmp.json
 Thumbs.db
 .vscode/
 .idea/
+
+.vercel
+.env*
