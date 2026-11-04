@@ -29,15 +29,17 @@ function harness(fetcher = async () => ({ ok: true, json: async () => ({}) })) {
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   const timers = new Map(); let timerId = 0;
+  const clipboardWrites = [];
   const context = vm.createContext({
     document: { getElementById: get, createElement: tag => new Element(tag), querySelectorAll: () => [] },
+    navigator: { clipboard: { async writeText(value) { clipboardWrites.push(value); } } },
     fetch: (url, options) => url === '/api/config' ? Promise.resolve({ ok: true, json: async () => ({ storage: { available: true } }) }) : fetcher(url, options),
     AbortSignal, Intl, Date, console,
     setTimeout: callback => { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout: id => timers.delete(id), setInterval: () => 0, clearInterval() {}
   });
   vm.runInContext(source, context);
-  return { get, timers, context, run: script => vm.runInContext(script, context), async tick() { const [id, fn] = timers.entries().next().value; timers.delete(id); await fn(); } };
+  return { get, timers, context, clipboardWrites, run: script => vm.runInContext(script, context), async tick() { const [id, fn] = timers.entries().next().value; timers.delete(id); await fn(); } };
 }
 const row = (mint = 'mint-one', score = 60) => ({ mint, symbol: mint, rank: 1, score, grade: 'B', market: { priceUsd: 1, change: {}, liquidityUsd: 200000, turnover: 1, marketCap: 2000000, ageHours: 72 }, safety: { top10Pct: 10 }, components: [], penalties: [], entryPlan: null });
 function allElements(root) { return [root, ...root.children.flatMap(allElements)]; }
@@ -131,7 +133,7 @@ test('UI label Balanced konsisten dengan gate usia pool 48 jam', () => {
   assert.doesNotMatch(html, /Klik satu baris/);
 });
 
-test('UI Discover dapat memaksa sampling baru lewat toggle refresh', async () => {
+test('UI Discover selalu meminta data baru (refresh=1) tanpa toggle', async () => {
   let requested = '';
   const h = harness(async url => {
     requested = url;
@@ -140,12 +142,25 @@ test('UI Discover dapat memaksa sampling baru lewat toggle refresh', async () =>
       preset: { label: 'Balanced' }, configHash: 'abc123', warnings: [], jobId: null, jobTotal: 0
     }) };
   });
-  h.get('refresh-toggle').checked = true;
   await h.get('discover-button').listeners.click();
   assert.match(requested, /refresh=1/);
+  assert.doesNotMatch(requested, /refresh=0/);
 });
 
-test('UI Inspect dapat memaksa sampling baru lewat toggle refresh', async () => {
+test('UI menyalin alamat mint saat teks mint pada baris Discover diklik', async () => {
+  const h = harness(async () => ({ ok: true, json: async () => ({}) }));
+  h.context.fixture = { rows: [row('mint-one')] };
+  h.run('discoverData = fixture; renderCandidates(discoverData)');
+  const mintEl = allElements(h.get('candidates')).find(item => item.classList.contains('copy-mint'));
+  assert.ok(mintEl, 'elemen salin mint harus ada pada baris kandidat');
+  await mintEl.listeners.click({ stopPropagation() {} });
+  assert.deepEqual(h.clipboardWrites, ['mint-one']);
+  assert.match(mintEl.textContent, /Tersalin/);
+  await h.tick();
+  assert.equal(mintEl.textContent, 'mint-one');
+});
+
+test('UI Inspect memakai cache 30 detik (tanpa parameter refresh)', async () => {
   let requested = '';
   const h = harness(async url => {
     requested = url;
@@ -153,10 +168,30 @@ test('UI Inspect dapat memaksa sampling baru lewat toggle refresh', async () => 
       mint: 'mint-one', checkedAt: '2026-10-19T10:00:00Z', market: { status: 'available', pairs: [], primary: null }, history: { status: 'unknown', metrics: {}, candles: [] }, risk: { status: 'unknown', findings: [] }, entryContext: { cautions: [], reason: '' }
     }) };
   });
-  h.get('refresh-toggle').checked = true;
   h.get('mint').value = 'mint-one';
   await h.get('scan-form').listeners.submit({ preventDefault() {} });
-  assert.match(requested, /refresh=1/);
+  assert.doesNotMatch(requested, /refresh=1/);
+});
+
+test('UI Inspect menyalin alamat mint saat header token diklik', async () => {
+  const h = harness(async () => ({ ok: true, json: async () => ({}) }));
+  h.context.scan = { mint: 'mint-one', checkedAt: '2026-10-19T10:00:00Z', market: { status: 'available', pairs: [], primary: null }, history: { status: 'unknown', metrics: {}, candles: [] }, risk: { status: 'unknown', findings: [] }, entryContext: { cautions: [] } };
+  h.run('render(scan)');
+  const mintHeader = h.get('token-mint');
+  await mintHeader.listeners.click({ stopPropagation() {} });
+  assert.deepEqual(h.clipboardWrites, ['mint-one']);
+  assert.match(mintHeader.textContent, /Tersalin/);
+  await h.tick();
+  assert.equal(mintHeader.textContent, 'mint-one');
+});
+
+test('UI Watchlist menyalin alamat mint lengkap dari baris watchlist', async () => {
+  const h = harness(async () => ({ ok: true, json: async () => ({ items: [{ mint: 'mint-panjang-sekali', addedAt: 'now', snapshot: { symbol: 'LONG' } }], history: [] }) }));
+  await h.run('loadWatchlist()');
+  const label = allElements(h.get('watch-items')).find(item => item.classList.contains('copy-mint'));
+  assert.ok(label, 'label watchlist harus bisa disalin');
+  await label.listeners.click({ stopPropagation() {} });
+  assert.deepEqual(h.clipboardWrites, ['mint-panjang-sekali']);
 });
 
 test('UI rincian kandidat menampilkan waktu pengambilan dan asal konsentrasi holder', () => {

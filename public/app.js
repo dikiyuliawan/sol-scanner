@@ -22,6 +22,40 @@ const gateLabel = code => GATE_LABELS[code] ? `${GATE_LABELS[code]} (${code})` :
 const gateShort = code => GATE_LABELS[code] ?? code;
 
 function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
+
+/** Salin teks ke clipboard: Clipboard API bila ada, fallback textarea. */
+async function copyText(text) {
+  try {
+    if (navigator?.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* coba fallback di bawah */ }
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body?.appendChild?.(area);
+    area.select?.();
+    const ok = document.execCommand?.('copy');
+    area.remove?.();
+    return Boolean(ok);
+  } catch { return false; }
+}
+
+/** Jadikan elemen bisa diklik untuk menyalin; beri umpan balik "Tersalin". */
+function enableCopy(el, getText) {
+  if (!el) return;
+  el.classList.add('copy-mint');
+  el.title = 'Klik untuk salin alamat mint';
+  el.addEventListener('click', async event => {
+    event?.stopPropagation?.();
+    const text = typeof getText === 'function' ? getText() : getText;
+    if (!text) return;
+    const restore = el.textContent;
+    el.textContent = 'Tersalin ✓';
+    await copyText(text);
+    setTimeout(() => { el.textContent = restore; }, 1200);
+  });
+}
 function findings(container, items) {
   container.replaceChildren();
   for (const item of items) {
@@ -169,7 +203,9 @@ function renderCandidates(data) {
     tr.dataset.mint = row.mint;
     tr.append(node('td', String(row.rank)));
     const token = node('td', undefined, 'token-cell');
-    token.append(node('strong', row.symbol ?? 'unknown'), node('small', row.mint));
+    const mintCell = node('small', row.mint);
+    enableCopy(mintCell, row.mint);
+    token.append(node('strong', row.symbol ?? 'unknown'), mintCell);
     tr.append(token);
     const score = node('td'); score.append(scoreBadge(row.score, row.grade, row.confidence)); tr.append(score);
     tr.append(node('td', usd(row.market.priceUsd)));
@@ -424,7 +460,9 @@ function pollJob(jobId, total) {
 
 $('discover-button').addEventListener('click', async () => {
   const preset = $('preset').value;
-  const refresh = $('refresh-toggle')?.checked === true;
+  // Tombol Discover selalu berarti data baru: cache server dan cache sumber
+  // selalu dilewati, tanpa toggle terpisah.
+  const refresh = true;
   clearTimeout(jobTimer);
   jobGeneration++;
   discoverData = null;
@@ -534,14 +572,13 @@ $('example').addEventListener('click', () => { $('mint').value = 'So111111111111
 $('scan-form').addEventListener('submit', async event => {
   event.preventDefault();
   const mint = $('mint').value.trim();
-  const refresh = $('refresh-toggle')?.checked === true;
   $('status').className = '';
   $('status').textContent = 'Memeriksa sumber data… Tidak ada transaksi yang dikirim.';
   displayedHistory = null;
   $('results').hidden = true;
   $('scan-button').disabled = true; $('example').disabled = true; $('mint').disabled = true;
   try {
-    const response = await fetch(`/api/scan?mint=${encodeURIComponent(mint)}${refresh ? '&refresh=1' : ''}`, { signal: AbortSignal.timeout(30000), cache: 'no-store' });
+    const response = await fetch(`/api/scan?mint=${encodeURIComponent(mint)}`, { signal: AbortSignal.timeout(30000), cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     render(data);
@@ -590,7 +627,9 @@ async function loadWatchlist() {
     for (const item of data.items) {
       const box = node('div', undefined, 'watch-item');
       const head = node('div', undefined, 'section-head');
-      head.append(node('strong', item.snapshot?.symbol ? `${item.snapshot.symbol} · ${item.mint.slice(0, 8)}…` : item.mint), node('span', item.addedAt, 'hint'));
+      const watchLabel = node('strong', item.snapshot?.symbol ? `${item.snapshot.symbol} · ${item.mint.slice(0, 8)}…` : item.mint);
+      enableCopy(watchLabel, item.mint);
+      head.append(watchLabel, node('span', item.addedAt, 'hint'));
       const actions = node('div', undefined, 'detail-actions');
       const inspect = node('button', 'Inspect', 'text-button');
       inspect.type = 'button';
@@ -629,3 +668,4 @@ async function loadWatchlist() {
   }
 }
 $('watch-refresh').addEventListener('click', loadWatchlist);
+enableCopy($('token-mint'), () => currentMint);

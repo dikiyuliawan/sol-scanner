@@ -123,3 +123,5 @@ a{color:var(--accent)}
   .input-row button{width:100%}
   .tabs{overflow-x:auto}
 }
+.copy-mint{cursor:pointer}
+.copy-mint:hover{text-decoration:underline}
