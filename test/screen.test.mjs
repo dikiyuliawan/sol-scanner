@@ -202,3 +202,38 @@ test('mergeUniverse menggabungkan sumber dan memilih pool paling likuid', () => 
   assert.deepEqual(a.sources, ['Jupiter', 'GeckoTerminal']);
   assert.equal(a.pool.liquidityUsd, 900);
 });
+
+test('buy pressure menggugurkan kandidat dengan rasio beli di bawah ambang preset', () => {
+  const sellHeavy = candidate({ pool: { txns: { h24: { buys: 300, sells: 900 } } } });
+  const result = evaluateGates(sellHeavy, getPreset('balanced'));
+  assert.ok(result.rejections.some(item => item.code === 'buy_pressure_low'));
+});
+
+test('buy pressure tanpa data transaksi menjadi peringatan, bukan lolos diam-diam', () => {
+  const noTxns = candidate({ pool: { txns: undefined } });
+  const result = evaluateGates(noTxns, getPreset('balanced'));
+  assert.ok(!result.rejections.some(item => item.code === 'buy_pressure_low'));
+  assert.ok(result.warnings.some(item => item.code === 'buy_pressure_unknown'));
+});
+
+test('conservative menggugurkan tren downtrend setelah deep scan, degen tidak', () => {
+  const downtrend = candidate({ structure: { status: 'available', trend: 'downtrend' } });
+  assert.ok(evaluateGates(downtrend, getPreset('conservative')).rejections.some(item => item.code === 'downtrend'));
+  assert.ok(evaluateGates(downtrend, getPreset('balanced')).rejections.some(item => item.code === 'downtrend'));
+  assert.ok(!evaluateGates(downtrend, getPreset('degen')).rejections.some(item => item.code === 'downtrend'));
+});
+
+test('degen menggugurkan pola rug: konsentrasi tinggi tanpa informasi kunci LP', () => {
+  const rug = candidate({
+    jupiter: { audit: { mintAuthorityDisabled: true, freezeAuthorityDisabled: true, topHoldersPercentage: 75 } },
+    safety: { status: 'available', security: { mintable: false, freezable: false, nonTransferable: false, transferFee: false, transferHook: false, top10Pct: 75, holderCount: 900, lpHolderPct: null } }
+  });
+  assert.ok(evaluateGates(rug, getPreset('degen')).rejections.some(item => item.code === 'rug_pattern'));
+  assert.ok(!evaluateGates(rug, getPreset('balanced')).rejections.some(item => item.code === 'rug_pattern'));
+});
+
+test('balanced menurunkan batas kenaikan 24 jam ke 100% dan menaikkan minimal holder ke 1500', () => {
+  const hot = candidate({ pool: { change: { h24: 120 } } });
+  assert.ok(evaluateGates(hot, getPreset('balanced')).rejections.some(item => item.code === 'pump_24h'));
+  assert.equal(getPreset('balanced').minHolderCount, 1500);
+});

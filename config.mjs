@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const CONFIG_VERSION = '2026-10-20.1';
+export const CONFIG_VERSION = '2026-11-05.1';
 
 /**
  * Preset hanya mengubah angka, bukan kode. Semua ambang di sini adalah
@@ -22,8 +22,10 @@ export const PRESETS = {
     maxTurnover: 8,
     requireVerified: true,
     minOrganicLabel: 'medium',
-    minPriceChange24hPct: -25,
+    minPriceChange24hPct: -15,
     maxPriceChange24hPct: 150,
+    minBuyRatio24h: 0.5,
+    rejectDowntrend: true,
     allowUnknownSafety: false
   },
   balanced: {
@@ -32,7 +34,7 @@ export const PRESETS = {
     minLiquidityUsd: 150_000,
     minVolume24hUsd: 50_000,
     minPoolAgeHours: 48,
-    minHolderCount: 1_000,
+    minHolderCount: 1_500,
     maxTop10Pct: 30,
     minMarketCapUsd: 1_000_000,
     maxFdvToMcap: 1.5,
@@ -41,7 +43,9 @@ export const PRESETS = {
     requireVerified: false,
     minOrganicLabel: 'medium',
     minPriceChange24hPct: -30,
-    maxPriceChange24hPct: 150,
+    maxPriceChange24hPct: 100,
+    minBuyRatio24h: 0.45,
+    rejectDowntrend: true,
     allowUnknownSafety: true
   },
   degen: {
@@ -60,6 +64,9 @@ export const PRESETS = {
     minOrganicLabel: 'low',
     minPriceChange24hPct: -50,
     maxPriceChange24hPct: 500,
+    minBuyRatio24h: 0.4,
+    rejectRugPattern: true,
+    rejectDowntrend: false,
     allowUnknownSafety: true
   }
 };

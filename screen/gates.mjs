@@ -136,6 +136,30 @@ export function evaluateGates(candidate, preset) {
     }
   }
 
+  // Tekanan beli 24 jam: buy / (buy + sell). Hanya dievaluasi bila data
+  // transaksi ada; tanpa data, peringatan (bukan lolos diam-diam).
+  const buys = pool?.txns?.h24?.buys ?? null;
+  const sells = pool?.txns?.h24?.sells ?? null;
+  const buyRatio = buys !== null && sells !== null && buys + sells > 0 ? buys / (buys + sells) : null;
+  if (preset.minBuyRatio24h !== undefined) {
+    if (buyRatio === null) {
+      warnings.push({ code: 'buy_pressure_unknown', severity: 'warn', reason: 'Data transaksi 24 jam tidak tersedia; tekanan beli tidak dievaluasi. Unknown bukan berarti kuat.' });
+    } else {
+      check(rejections, 'buy_pressure_low', buyRatio >= preset.minBuyRatio24h,
+        `Rasio beli 24 jam ${(buyRatio * 100).toFixed(1)}% di bawah ambang ${(preset.minBuyRatio24h * 100).toFixed(0)}%; tekanan jual dominan.`);
+    }
+  }
+
+  // Pola rug: konsentrasi top-10 tinggi dan tidak ada informasi kunci LP.
+  // Hanya berlaku untuk preset yang mengaktifkan rejectRugPattern.
+  if (preset.rejectRugPattern && safety?.security) {
+    const top10 = concentrationFor(candidate).value;
+    const lpKnown = safety.security.lpHolderPct != null;
+    if (top10 !== null && top10 > preset.maxTop10Pct && !lpKnown) {
+      rejections.push({ code: 'rug_pattern', severity: 'reject', reason: `Top 10 holder ${top10.toFixed(1)}% di atas ambang ${preset.maxTop10Pct}% dan status kunci LP tidak diketahui; pola rug umum.` });
+    }
+  }
+
   // Peringatan yang tidak menggugurkan kandidat, tetapi harus terlihat.
   if (pool?.createdAt) {
     const ageHours = (candidate.now - pool.createdAt) / 3_600_000;
@@ -149,6 +173,12 @@ export function evaluateGates(candidate, preset) {
   }
   if (safety?.security?.lpHolderPct === null) {
     warnings.push({ code: 'lp_unknown', severity: 'warn', reason: 'Status kunci/burn LP unknown; likuiditas tidak membuktikan LP terkunci.' });
+  }
+
+  // Tren 1 jam menurun (EMA20 di bawah EMA50) menggugurkan preset yang
+  // mengaktifkan rejectDowntrend. Hanya tersedia setelah deep scan.
+  if (preset.rejectDowntrend && candidate.structure?.status === 'available' && candidate.structure.trend === 'downtrend') {
+    rejections.push({ code: 'downtrend', severity: 'reject', reason: 'Tren 1 jam menurun (EMA20 di bawah EMA50); tidak ada skenario long dari struktur ini.' });
   }
 
   const sort = list => list.slice().sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.code.localeCompare(b.code));
