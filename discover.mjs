@@ -270,6 +270,8 @@ export function serializeCandidate(candidate, preset, warnings = []) {
       volume24h: pool?.volume?.h24 ?? null,
       volume6h: pool?.volume?.h6 ?? null,
       volume1h: pool?.volume?.h1 ?? null,
+      buys24h: pool?.txns?.h24?.buys ?? null,
+      sells24h: pool?.txns?.h24?.sells ?? null,
       turnover,
       marketCap: pool?.marketCap ?? null,
       fdv: pool?.fdv ?? null,
