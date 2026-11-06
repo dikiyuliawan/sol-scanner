@@ -1,4 +1,4 @@
-import { DISCOVERY, GRADE_THRESHOLDS, SCORE_WEIGHTS } from '../config.mjs';
+import { DISCOVERY, GRADE_THRESHOLDS, SCORE_WEIGHTS, weightsForPreset } from '../config.mjs';
 import { concentrationFor, secondaryConcentration } from './provenance.mjs';
 
 const clamp = (value, min = 0, max = 100) => Math.min(max, Math.max(min, value));
@@ -39,7 +39,7 @@ function component(key, label, weight, score, evidence, note = null) {
   return { key, label, weight, score: value, points: value === null ? 0 : Math.round(value * weight / 100 * 10) / 10, evidence, note };
 }
 
-export function scoreSafety(candidate) {
+export function scoreSafety(candidate, weights = SCORE_WEIGHTS) {
   const { safety, jupiter } = candidate;
   const s = safety?.security ?? null;
   const audit = jupiter?.audit ?? null;
@@ -87,12 +87,13 @@ export function scoreSafety(candidate) {
     evidence.push({ metric: 'Verifikasi token', value: 'verified', source: 'Jupiter' });
   }
 
-  return component('safety', 'Keamanan kontrak & distribusi', SCORE_WEIGHTS.safety, score, evidence);
+  return component('safety', 'Keamanan kontrak & distribusi', weights.safety, score, evidence);
 }
 
 export function scoreLiquidity(candidate, preset) {
+  const weights = candidate.__weights ?? SCORE_WEIGHTS;
   const pool = candidate.market?.pool;
-  if (!pool) return component('liquidity', 'Likuiditas & eksekusi', SCORE_WEIGHTS.liquidity, null, [], 'Pool tidak tersedia.');
+  if (!pool) return component('liquidity', 'Likuiditas & eksekusi', weights.liquidity, null, [], 'Pool tidak tersedia.');
   const evidence = [];
   const poolSource = pool.source ?? 'DEX Screener';
   // Kurva relatif preset: likuiditas dianggap "penuh" pada 20x ambang minimum
@@ -111,7 +112,7 @@ export function scoreLiquidity(candidate, preset) {
   evidence.push({ metric: `Estimasi slippage $${candidate.notionalUsd ?? 500}`, value: slippage === null ? 'unknown' : `${slippage.toFixed(2)}%`, source: 'estimasi lokal dari likuiditas' });
 
   const parts = [liqScore, turnoverScore, slippageScore].filter(value => value !== null);
-  return component('liquidity', 'Likuiditas & eksekusi', SCORE_WEIGHTS.liquidity, parts.length ? avg(parts) : null, evidence,
+  return component('liquidity', 'Likuiditas & eksekusi', weights.liquidity, parts.length ? avg(parts) : null, evidence,
     slippage !== null && slippage > 2 ? 'Estimasi slippage di atas 2%; kualitas eksekusi buruk.' : null);
 }
 
@@ -122,9 +123,10 @@ export function estimateSlippage(liquidityUsd, notionalUsd) {
 }
 
 export function scoreMomentum(candidate) {
+  const weights = candidate.__weights ?? SCORE_WEIGHTS;
   const pool = candidate.market?.pool;
   const stats = candidate.jupiter?.stats ?? {};
-  if (!pool) return component('momentum', 'Momentum & akselerasi volume', SCORE_WEIGHTS.momentum, null, [], 'Pool tidak tersedia.');
+  if (!pool) return component('momentum', 'Momentum & akselerasi volume', weights.momentum, null, [], 'Pool tidak tersedia.');
   const evidence = [];
   const poolSource = pool.source ?? 'DEX Screener';
   const change1h = pool.change?.h1 ?? stats['1h']?.priceChange ?? null;
@@ -162,7 +164,7 @@ export function scoreMomentum(candidate) {
 
   const vol24Score = ramp(vol24h, 0, 2_000_000);
   const parts = [consistency, accelScore, buyScore, netScore, vol24Score].filter(value => value !== null);
-  return component('momentum', 'Momentum & akselerasi volume', SCORE_WEIGHTS.momentum, parts.length ? avg(parts) : null, evidence);
+  return component('momentum', 'Momentum & akselerasi volume', weights.momentum, parts.length ? avg(parts) : null, evidence);
 }
 
 function signedPct(value) {
@@ -174,14 +176,15 @@ function fmt(value, digits = 2, suffix = '') {
 }
 
 export function scoreStructure(candidate) {
+  const weights = candidate.__weights ?? SCORE_WEIGHTS;
   const structure = candidate.structure;
   if (!structure) {
-    return component('structure', 'Struktur & kualitas entry', SCORE_WEIGHTS.structure, null,
+    return component('structure', 'Struktur & kualitas entry', weights.structure, null,
       [{ metric: 'Struktur candle 1j', value: 'belum dianalisis', source: 'deep scan belum berjalan' }],
       'Struktur belum dianalisis; komponen ini dikeluarkan dari skor, bukan diberi nilai netral.');
   }
   if (structure.status !== 'available') {
-    return component('structure', 'Struktur & kualitas entry', SCORE_WEIGHTS.structure, null,
+    return component('structure', 'Struktur & kualitas entry', weights.structure, null,
       [{ metric: 'Struktur candle 1j', value: structure.reason ?? 'unknown', source: 'GeckoTerminal' }],
       'Struktur tidak dapat dinilai; komponen ini dikeluarkan dari skor, bukan diberi nilai netral.');
   }
@@ -206,12 +209,13 @@ export function scoreStructure(candidate) {
   else if (higherHigh === true) sequence = 45;
   else if (higherHigh === false && higherLow === false) sequence = 20;
   const parts = [trendScore, proximity, rsiScore, atrScore, sequence].filter(value => value !== null);
-  return component('structure', 'Struktur & kualitas entry', SCORE_WEIGHTS.structure, parts.length ? avg(parts) : null, evidence);
+  return component('structure', 'Struktur & kualitas entry', weights.structure, parts.length ? avg(parts) : null, evidence);
 }
 
 export function scoreOrganic(candidate) {
+  const weights = candidate.__weights ?? SCORE_WEIGHTS;
   const jupiter = candidate.jupiter;
-  if (!jupiter) return component('organic', 'Organic attention', SCORE_WEIGHTS.organic, null, [], 'Jupiter tidak tersedia.');
+  if (!jupiter) return component('organic', 'Organic attention', weights.organic, null, [], 'Jupiter tidak tersedia.');
   const evidence = [
     { metric: 'Organic score', value: jupiter.organicScore === null ? 'unknown' : `${jupiter.organicScore.toFixed(1)} (${jupiter.organicLabel ?? '?'})`, source: 'Jupiter' }
   ];
@@ -226,7 +230,7 @@ export function scoreOrganic(candidate) {
     evidence.push({ metric: 'Organic buyer / trader', value: `${stats.numOrganicBuyers} / ${stats.numTraders}`, source: 'Jupiter' });
   }
   const parts = [score, organicRatio === null ? null : ramp(organicRatio, 0, 0.5)].filter(value => value !== null);
-  return component('organic', 'Organic attention', SCORE_WEIGHTS.organic, parts.length ? avg(parts) : null, evidence);
+  return component('organic', 'Organic attention', weights.organic, parts.length ? avg(parts) : null, evidence);
 }
 
 /**
@@ -245,18 +249,26 @@ export function scoreOrganic(candidate) {
  * Semua angka yang tidak diketahui dikeluarkan, bukan diberi nilai netral dan
  * bukan dihitung sebagai nol.
  */
-export function scoreUpside(candidate) {
+export function scoreUpside(candidate, preset = null) {
   const pool = candidate.market?.pool;
-  if (!pool) return component('upside', 'Ruang naik / undervalued', SCORE_WEIGHTS.upside, null, [], 'Pool tidak tersedia.');
+  const weights = candidate.__weights ?? SCORE_WEIGHTS;
+  if (!pool) return component('upside', 'Ruang naik / undervalued', weights.upside, null, [], 'Pool tidak tersedia.');
   const evidence = [];
   const poolSource = pool.source ?? 'DEX Screener';
   const parts = [];
 
+  // Batas atas per preset: Gem hunter mencari token jauh lebih kecil, jadi
+  // kurva mcap-nya harus digeser. Tanpa ini token $5jt dan $50jt sama-sama
+  // mendapat skor rendah di semua preset dan upside kehilangan dayanya.
+  const capMax = preset?.upsideMaxMarketCapUsd ?? DISCOVERY.upsideMaxMarketCapUsd;
+  const capFloor = preset?.upsideMinMarketCapUsd ?? 100_000;
+  const liqMax = preset?.upsideMaxLiquidityUsd ?? DISCOVERY.upsideMaxLiquidityUsd;
+
   const marketCap = pool.marketCap ?? candidate.jupiter?.marketCap ?? null;
-  if (marketCap !== null && Number.isFinite(marketCap) && marketCap > 0) {
+  if (marketCap !== null && Number.isFinite(marketCap) && marketCap > 0 && capMax > capFloor) {
     // Log scale: selisih $100k → $1M dan $1M → $10M sama-sama satu orde,
     // jadi kandidat mikro tidak otomatis menang hanya karena angka absolut.
-    const score = clamp(((Math.log10(DISCOVERY.upsideMaxMarketCapUsd) - Math.log10(marketCap)) / (Math.log10(DISCOVERY.upsideMaxMarketCapUsd) - Math.log10(100_000))) * 100);
+    const score = clamp(((Math.log10(capMax) - Math.log10(marketCap)) / (Math.log10(capMax) - Math.log10(capFloor))) * 100);
     parts.push(score);
     evidence.push({ metric: 'Ruang naik dari market cap', value: compactUsd(marketCap), source: poolSource });
   } else {
@@ -265,7 +277,7 @@ export function scoreUpside(candidate) {
 
   if (pool.liquidityUsd !== null && Number.isFinite(pool.liquidityUsd) && pool.liquidityUsd > 0) {
     // Likuiditas kecil = belum banyak modal; likuiditas besar = sudah mapan.
-    const score = ramp(DISCOVERY.upsideMaxLiquidityUsd - pool.liquidityUsd, 0, DISCOVERY.upsideMaxLiquidityUsd * 0.9);
+    const score = ramp(liqMax - pool.liquidityUsd, 0, liqMax * 0.9);
     parts.push(score);
     evidence.push({ metric: 'Ruang naik dari likuiditas', value: compactUsd(pool.liquidityUsd), source: poolSource });
   }
@@ -299,7 +311,7 @@ export function scoreUpside(candidate) {
   const note = score !== null && score >= 70
     ? 'Ruang naik tinggi: market cap kecil atau harga belum extended. Ini juga berarti risiko dan likuiditas lebih tipis.'
     : null;
-  return component('upside', 'Ruang naik / undervalued', SCORE_WEIGHTS.upside, score, evidence, note);
+  return component('upside', 'Ruang naik / undervalued', weights.upside, score, evidence, note);
 }
 
 function compactUsd(value) {
@@ -318,8 +330,14 @@ export function penaltiesFor(candidate, preset) {
   if (pool.marketCap && pool.fdv && pool.fdv / pool.marketCap > 2) {
     penalties.push({ code: 'fdv_gap', points: 5, reason: `FDV ${(pool.fdv / pool.marketCap).toFixed(2)}x market cap.` });
   }
+  // Penalti pump hanya dihitung untuk kenaikan JAUH di atas batas preset,
+  // bukan pada kenaikan yang memang diterima preset. Sebelumnya preset yang
+  // sengaja menerima +2000% tetap dihukum 8 poin karena memakai batas yang
+  // sama, sehingga momentum terkuat selalu kehilangan skor di Gem hunter.
   const maxPump = preset?.maxPriceChange24hPct ?? 150;
-  if (pool.change?.h24 != null && pool.change.h24 > maxPump) penalties.push({ code: 'pump_24h', points: 8, reason: `Sudah naik ${pool.change.h24.toFixed(0)}% dalam 24 jam.` });
+  if (pool.change?.h24 != null && maxPump > 0 && pool.change.h24 > maxPump * 1.5) {
+    penalties.push({ code: 'pump_24h', points: 8, reason: `Sudah naik ${pool.change.h24.toFixed(0)}% dalam 24 jam.` });
+  }
   const safetyFields = candidate.safety?.security;
   const safetyUnknown = candidate.safety?.status !== 'available' || !safetyFields
     || ['mintable', 'freezable', 'nonTransferable', 'transferFee', 'transferHook'].some(key => safetyFields[key] == null);
@@ -338,13 +356,18 @@ export function gradeFor(score, { safetyUnknown = false } = {}) {
 }
 
 export function scoreCandidate(candidate, preset) {
+  // Bobot mengikuti preset, bukan satu set global. `__weights` diteruskan
+  // lewat candidate agar tiap komponen memakai bobot yang sama tanpa
+  // mengubah tanda tangan fungsi komponen yang sudah dipakai tes.
+  const weights = preset?.weights ?? weightsForPreset(preset?.name) ?? SCORE_WEIGHTS;
+  const scoped = candidate.__weights === weights ? candidate : { ...candidate, __weights: weights };
   const components = [
-    scoreSafety(candidate),
-    scoreLiquidity(candidate, preset),
-    scoreMomentum(candidate),
-    scoreStructure(candidate),
-    scoreOrganic(candidate),
-    scoreUpside(candidate)
+    scoreSafety(scoped, weights),
+    scoreLiquidity(scoped, preset),
+    scoreMomentum(scoped),
+    scoreStructure(scoped),
+    scoreOrganic(scoped),
+    scoreUpside(scoped, preset)
   ];
   const penalties = penaltiesFor(candidate, preset);
   const scored = components.filter(item => item.score !== null);
@@ -356,6 +379,10 @@ export function scoreCandidate(candidate, preset) {
   const safetyFields = candidate.safety?.security;
   const safetyUnknown = candidate.safety?.status !== 'available' || !safetyFields
     || ['mintable', 'freezable', 'nonTransferable', 'transferFee', 'transferHook'].some(key => safetyFields[key] == null);
+  // Total bobot preset bisa tidak persis 100 (mis. 99/101 karena pembulatan).
+  // Confidence dihitung terhadap total bobot preset itu sendiri agar angkanya
+  // tetap bermakna "porsi bukti yang terukur".
+  const totalPresetWeight = components.reduce((sum, item) => sum + item.weight, 0);
   return {
     score,
     grade: gradeFor(score, { safetyUnknown }),
@@ -365,6 +392,6 @@ export function scoreCandidate(candidate, preset) {
     weightsCovered: totalWeight,
     // Kepercayaan = porsi bobot yang benar-benar terukur. Skor dari 50% bobot
     // tidak boleh diperlakukan sama dengan skor dari 100% bobot.
-    confidence: totalWeight / 100
+    confidence: totalPresetWeight > 0 ? totalWeight / totalPresetWeight : 0
   };
 }

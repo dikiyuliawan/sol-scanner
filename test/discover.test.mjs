@@ -225,6 +225,10 @@ test('config endpoint mengekspos hash, preset, dan status storage', async t => {
   const data = await (await fetch(`${base}/api/config`)).json();
   assert.equal(data.configHash.length, 12);
   assert.ok(data.presets.balanced);
+  assert.equal(data.presets.balanced.thresholds.maxTop10Pct, 30);
+  assert.ok(data.presets.gem, 'preset gem hunter harus tersedia dari API');
+  assert.equal(data.presets.gem.thresholds.maxMarketCapUsd, 5_000_000);
+  assert.equal(Object.values(data.presets.gem.weights).reduce((sum, value) => sum + value, 0), 100);
   assert.equal(data.storage.available, true);
 });
 
@@ -460,4 +464,23 @@ test('kandidat tanpa jumlah holder Jupiter diverifikasi lewat GoPlus agar tidak 
   assert.equal(result.rows.length, 1, 'dengan jumlah holder dari GoPlus kandidat bisa lolos gate');
   assert.ok(result.warnings.some(reason => /GoPlus diverifikasi/.test(reason)), result.warnings.join(' | '));
   assert.ok(result.universe.sources['GeckoTerminal pool baru'] > 0, 'sumber pool baru harus dievaluasi pada preset degen');
+});
+
+test('preset gem hunter menerima sumber pool baru yang sama', async () => {
+  const geckoToken = { ...universeToken(901), symbol: 'GEM', holderCount: 120, liquidityUsd: 60_000 };
+  const sources = fakeSources({ pool: healthyPool });
+  sources.jupiter.topOrganic = async () => ({ status: 'available', source: 'Jupiter', tokens: [], fetchedAt: new Date(NOW).toISOString() });
+  sources.jupiter.topTrending = async () => ({ status: 'available', source: 'Jupiter', tokens: [], fetchedAt: new Date(NOW).toISOString() });
+  sources.jupiter.recent = async () => ({ status: 'available', source: 'Jupiter', tokens: [], fetchedAt: new Date(NOW).toISOString() });
+  sources.gecko.newPools = async () => ({ status: 'available', source: 'GeckoTerminal', pools: [{ ...geckoToken, poolAddress: 'GeckoPool22222222222222222222222222222222222' }], fetchedAt: new Date(NOW).toISOString() });
+  sources.gecko.trending = async () => ({ status: 'available', source: 'GeckoTerminal', pools: [], fetchedAt: new Date(NOW).toISOString() });
+  sources.dexscreener.batch = async mints => {
+    const pools = new Map();
+    for (const mint of mints) pools.set(mint, { ...healthyPool, baseMint: mint, baseSymbol: 'GEM', marketCap: 250_000, fdv: 280_000, liquidityUsd: 60_000 });
+    return { status: 'available', source: 'DEX Screener', pools, fetchedAt: new Date(NOW).toISOString() };
+  };
+  sources.goplus.security = async () => ({ status: 'available', source: 'GoPlus', fetchedAt: new Date(NOW).toISOString(), security: { mintable: false, freezable: false, nonTransferable: false, top10Pct: 30, holderCount: 120, lpHolderPct: null, transferFee: false, transferHook: false, metadataMutable: false } });
+  const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'gem', skipDeep: true });
+  assert.ok(result.universe.sources['GeckoTerminal pool baru'] > 0, 'preset Gem hunter harus mengambil sumber pool baru');
+  assert.equal(result.rows.length, 1, 'token mikro dari sumber baru bisa lolos gate gem');
 });

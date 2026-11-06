@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const CONFIG_VERSION = '2026-11-06.1';
+export const CONFIG_VERSION = '2026-11-06.2';
 
 /**
  * Preset hanya mengubah angka, bukan kode. Semua ambang di sini adalah
@@ -25,6 +25,11 @@ export const PRESETS = {
     minPriceChange24hPct: -15,
     maxPriceChange24hPct: 150,
     minBuyRatio24h: 0.5,
+    requireKnownMarketCap: true,
+    // Kurva upside digeser ke bawah: token $10jt di preset ini sudah "besar".
+    upsideMaxMarketCapUsd: 25_000_000,
+    upsideMinMarketCapUsd: 250_000,
+    upsideMaxLiquidityUsd: 3_000_000,
     rejectDowntrend: true,
     allowUnknownSafety: false
   },
@@ -65,17 +70,65 @@ export const PRESETS = {
     minPriceChange24hPct: -50,
     maxPriceChange24hPct: 500,
     minBuyRatio24h: 0.4,
-    rejectRugPattern: true,
+    // Ambang pola rug terpisah dari maxTop10Pct. Sebelumnya memakai
+    // maxTop10Pct (60%), yang sudah pasti ditolak concentration_high lebih
+    // dulu sehingga gate ini tidak pernah menambah apa pun.
+    rugTop10Pct: 40,
+    // Upside di Degen: geser kurva agar pool $60k–$1jt tidak otomatis 100.
+    upsideMaxMarketCapUsd: 20_000_000,
+    upsideMinMarketCapUsd: 100_000,
+    upsideMaxLiquidityUsd: 1_500_000,
+    rejectDowntrend: false,
+    allowUnknownSafety: true
+  },
+  // Preset khusus hidden gem: menerima token kecil/baru yang masih punya
+  // ruang naik besar, tetapi bahaya kontrak eksplisit tetap menggugurkan.
+  gem: {
+    label: 'Gem hunter',
+    description: 'Token kecil dan baru untuk ruang naik besar. Risiko sangat tinggi; gate keamanan eksplisit tetap berlaku.',
+    minLiquidityUsd: 50_000,
+    minVolume24hUsd: 15_000,
+    minPoolAgeHours: 1,
+    minHolderCount: 100,
+    maxTop10Pct: 45,
+    minMarketCapUsd: 50_000,
+    // Batas atas: token di atas $5jt bukan lagi hidden gem untuk preset ini.
+    maxMarketCapUsd: 5_000_000,
+    maxFdvToMcap: 5,
+    minTurnover: 0.1,
+    // Turnover tinggi pada pool kecil sering menandakan hype nyata, bukan
+    // wash. Batas atas tetap ada agar wash-trading ekstrem tidak lolos.
+    maxTurnover: 80,
+    requireVerified: false,
+    minOrganicLabel: 'low',
+    minPriceChange24hPct: -60,
+    // Multi-bagger sering SUDAH naik >500% dalam 24 jam. Batas atas di sini
+    // sengaja sangat longgar; pump diberi penalti skor, bukan gugur gate.
+    maxPriceChange24hPct: 2000,
+    minBuyRatio24h: 0.35,
+    // Tidak ada gate pola-rug tambahan di preset paling agresif ini: ambang
+    // maxTop10Pct (45%) sudah menjadi batas keras, dan informasi kunci LP
+    // jarang tersedia untuk token mikro sehingga gate ini akan menolak hampir
+    // seluruh kohort yang justru dicari preset ini.
+    rugTop10Pct: null,
+    // Kurva paling agresif: $50k = ruang naik penuh, $5jt sudah "mapan".
+    upsideMaxMarketCapUsd: 5_000_000,
+    upsideMinMarketCapUsd: 50_000,
+    upsideMaxLiquidityUsd: 750_000,
     rejectDowntrend: false,
     allowUnknownSafety: true
   }
 };
 
 /**
- * Enam komponen, total 100. `upside` sengaja diberi bobot besar: scanner ini
- * dipakai untuk mencari kandidat yang masih punya ruang naik, bukan hanya
- * token mapan yang sudah likuid. Tanpa komponen ini, skor hanya mengukur
- * kualitas + momentum dan kandidat kecil selalu kalah dari token besar.
+ * Bobot global adalah fallback untuk preset yang tidak punya bobot sendiri.
+ * Preset boleh menimpa sebagian atau seluruh bobot lewat `weights`.
+ *
+ * Alasannya: satu set bobot tidak bisa melayani tiga profil risiko. Preset
+ * Conservative yang memakai upside 25 akan menghukum token aman justru karena
+ * token itu aman; Gem hunter yang memakai safety 22 akan memberi nilai tinggi
+ * pada token yang sudah mapan. Bobot per preset membuat "skor" berarti hal
+ * yang berbeda per preset — dan itu memang tujuannya, karena gate-nya berbeda.
  */
 export const SCORE_WEIGHTS = {
   safety: 22,
@@ -85,6 +138,25 @@ export const SCORE_WEIGHTS = {
   organic: 9,
   upside: 25
 };
+
+/** Bobot per preset; harus berjumlah 100 agar `confidence` tetap bermakna. */
+export const PRESET_WEIGHTS = {
+  // Aman dulu: keamanan dan struktur mendominasi, upside kecil.
+  conservative: { safety: 34, liquidity: 20, momentum: 15, structure: 18, organic: 10, upside: 3 },
+  // Default: kualitas tetap utama, upside cukup untuk mengangkat token kecil.
+  balanced: { safety: 22, liquidity: 15, momentum: 14, structure: 15, organic: 9, upside: 25 },
+  // Risiko tinggi: upside dan momentum dominan, safety tetap cukup untuk
+  // membedakan token yang jelas berbahaya.
+  degen: { safety: 15, liquidity: 10, momentum: 20, structure: 15, organic: 10, upside: 30 },
+  // Paling agresif: upside terbesar; safety hanya pembeda terakhir karena
+  // bahaya eksplisit sudah digugurkan gate.
+  gem: { safety: 12, liquidity: 10, momentum: 22, structure: 13, organic: 8, upside: 35 }
+};
+
+export function weightsForPreset(name) {
+  const override = PRESET_WEIGHTS[name];
+  return override ? { ...SCORE_WEIGHTS, ...override } : SCORE_WEIGHTS;
+}
 
 export const LIMITS = {
   // Batas publik Jupiter yang terukur: burst beberapa request memicu 429,
@@ -182,12 +254,12 @@ export const EXCLUDED_TAGS = new Set(['stable', 'wrapped', 'lst', 'major']);
 
 export function getPreset(name) {
   const key = typeof name === 'string' && name in PRESETS ? name : 'balanced';
-  return { name: key, ...PRESETS[key] };
+  return { name: key, ...PRESETS[key], weights: weightsForPreset(key) };
 }
 
 export function configHash() {
   return createHash('sha256')
-    .update(JSON.stringify({ CONFIG_VERSION, PRESETS, SCORE_WEIGHTS, ENTRY, GRADE_THRESHOLDS, DISCOVERY, LIMITS }))
+    .update(JSON.stringify({ CONFIG_VERSION, PRESETS, SCORE_WEIGHTS, PRESET_WEIGHTS, ENTRY, GRADE_THRESHOLDS, DISCOVERY, LIMITS }))
     .digest('hex')
     .slice(0, 12);
 }

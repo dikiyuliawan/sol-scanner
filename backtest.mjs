@@ -151,8 +151,11 @@ export function summarize(observations, { minReturnPct = 10 } = {}) {
   const buckets = new Map();
   for (const item of observations) {
     const cohort = item.cohort ?? 'accepted';
-    const key = `${item.horizon}|${item.grade ?? 'unknown'}|${item.scoreStage ?? 'initial'}|${cohort}`;
-    if (!buckets.has(key)) buckets.set(key, { horizon: item.horizon, grade: item.grade ?? 'unknown', scoreStage: item.scoreStage ?? 'initial', cohort, returns: [], peaks: [] });
+    const preset = item.preset ?? 'unknown';
+    // Preset ikut jadi kunci: ambang dan bobot tiap preset berbeda, jadi
+    // menggabungkannya membuat kalibrasi per preset tidak mungkin dilakukan.
+    const key = `${item.horizon}|${item.grade ?? 'unknown'}|${item.scoreStage ?? 'initial'}|${cohort}|${preset}`;
+    if (!buckets.has(key)) buckets.set(key, { horizon: item.horizon, grade: item.grade ?? 'unknown', scoreStage: item.scoreStage ?? 'initial', cohort, preset, returns: [], peaks: [] });
     buckets.get(key).returns.push(item.returnPct);
     buckets.get(key).peaks.push(item.peakReturnPct ?? item.returnPct);
   }
@@ -164,6 +167,7 @@ export function summarize(observations, { minReturnPct = 10 } = {}) {
         grade: bucket.grade,
         scoreStage: bucket.scoreStage,
         cohort: bucket.cohort,
+        preset: bucket.preset,
         count: bucket.returns.length,
         medianReturnPct: round(median(bucket.returns)),
         meanReturnPct: round(bucket.returns.reduce((sum, value) => sum + value, 0) / bucket.returns.length),
@@ -177,7 +181,7 @@ export function summarize(observations, { minReturnPct = 10 } = {}) {
         ]))
       };
     })
-    .sort((a, b) => a.horizon - b.horizon || a.cohort.localeCompare(b.cohort) || a.grade.localeCompare(b.grade) || a.scoreStage.localeCompare(b.scoreStage));
+    .sort((a, b) => a.horizon - b.horizon || a.cohort.localeCompare(b.cohort) || a.preset.localeCompare(b.preset) || a.grade.localeCompare(b.grade) || a.scoreStage.localeCompare(b.scoreStage));
 }
 
 /**
@@ -228,10 +232,10 @@ function printReport({ records, result, summary, attribution, minMultiple, args,
     console.log('Belum ada pasangan snapshot yang cukup. Jalankan discovery beberapa kali');
     console.log('dengan jarak minimal sepanjang horizon, lalu ulangi perintah ini.');
   } else {
-    console.log(`horizon | cohort     | grade | tahap      | n   | median % | ${peakHeader.padEnd(13)} | win %  | hit %  |   2x % |   5x % |  10x %`);
-    console.log('--------|------------|-------|------------|-----|----------|---------------|--------|--------|--------|--------|-------');
+    console.log(`horizon | cohort     | preset     | grade | tahap      | n   | median % | ${peakHeader.padEnd(13)} | win %  | hit %  |   2x % |   5x % |  10x %`);
+    console.log('--------|------------|------------|-------|------------|-----|----------|---------------|--------|--------|--------|--------|-------');
     for (const row of summary) {
-      console.log(`${String(row.horizon).padStart(6)}h | ${(row.cohort ?? 'accepted').padEnd(10)} | ${row.grade.padEnd(5)} | ${(row.scoreStage ?? 'initial').padEnd(10)} | ${String(row.count).padStart(3)} | ${String(row.medianReturnPct).padStart(8)} | ${String(row.medianPeakReturnPct).padStart(13)} | ${String(row.winRatePct).padStart(6)} | ${String(row.hitRatePct).padStart(6)} | ${String(row.pct2x).padStart(6)} | ${String(row.pct5x).padStart(6)} | ${String(row.pct10x).padStart(6)}`);
+      console.log(`${String(row.horizon).padStart(6)}h | ${(row.cohort ?? 'accepted').padEnd(10)} | ${(row.preset ?? 'unknown').padEnd(10)} | ${row.grade.padEnd(5)} | ${(row.scoreStage ?? 'initial').padEnd(10)} | ${String(row.count).padStart(3)} | ${String(row.medianReturnPct).padStart(8)} | ${String(row.medianPeakReturnPct).padStart(13)} | ${String(row.winRatePct).padStart(6)} | ${String(row.hitRatePct).padStart(6)} | ${String(row.pct2x).padStart(6)} | ${String(row.pct5x).padStart(6)} | ${String(row.pct10x).padStart(6)}`);
     }
   }
 

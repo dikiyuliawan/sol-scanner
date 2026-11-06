@@ -33,7 +33,11 @@ export function evaluateGates(candidate, preset) {
     check(rejections, 'volume_low', pool.volume?.h24 !== null && pool.volume?.h24 >= preset.minVolume24hUsd,
       `Volume 24 jam USD ${pool.volume?.h24 ?? 'unknown'} di bawah ambang ${preset.minVolume24hUsd}.`);
 
-    const rawAge = pool.createdAt ? (candidate.now - pool.createdAt) / 3_600_000 : null;
+    // Usia pool: DEX Screener tidak selalu melaporkan createdAt. Jupiter
+    // menyimpan firstPoolAt untuk mint yang sama, jadi pakai sebagai
+    // fallback sebelum menyimpulkan "unknown" dan menggugurkan kandidat.
+    const ageSource = pool.createdAt ?? (Number.isFinite(Date.parse(jupiter?.firstPoolAt)) ? Date.parse(jupiter.firstPoolAt) : null);
+    const rawAge = ageSource ? (candidate.now - ageSource) / 3_600_000 : null;
     const ageHours = rawAge !== null && Number.isFinite(rawAge) && rawAge >= 0 ? rawAge : null;
     check(rejections, 'pool_too_new', ageHours !== null && ageHours >= preset.minPoolAgeHours,
       `Usia pool ${ageHours === null ? 'unknown' : `${ageHours.toFixed(1)} jam`} di bawah ambang ${preset.minPoolAgeHours} jam.`);
@@ -49,6 +53,18 @@ export function evaluateGates(candidate, preset) {
     if (pool.marketCap !== null && pool.marketCap !== undefined) {
       check(rejections, 'mcap_low', pool.marketCap >= preset.minMarketCapUsd,
         `Market cap USD ${pool.marketCap} di bawah ambang ${preset.minMarketCapUsd}.`);
+      // Batas atas opsional: preset gem hunter hanya mencari token kecil, jadi
+      // token yang sudah besar tidak boleh memenuhi daftar hanya karena lolos
+      // ambang bawah.
+      if (preset.maxMarketCapUsd != null) {
+        check(rejections, 'mcap_high', pool.marketCap <= preset.maxMarketCapUsd,
+          `Market cap USD ${pool.marketCap} di atas batas preset gem ${preset.maxMarketCapUsd}; token sudah terlalu besar untuk preset ini.`);
+      }
+    } else if (preset.requireKnownMarketCap) {
+      // Preset yang mewajibkan valuasi terukur tidak boleh meloloskan token
+      // yang market cap-nya tidak diketahui: gate mcap tidak dievaluasi sama
+      // sekali, dan "unknown" bukan berarti cukup.
+      rejections.push({ code: 'mcap_unknown', severity: 'reject', reason: 'Market cap tidak dilaporkan sumber dan preset ini mewajibkan valuasi terukur.' });
     } else {
       // Gate market cap tidak bisa dihitung. Ini dicatat sebagai peringatan,
       // bukan lolos diam-diam: ambang pasar minimum tidak dievaluasi.
@@ -121,8 +137,11 @@ export function evaluateGates(candidate, preset) {
     }
   }
 
-  if (preset.requireVerified && jupiter && jupiter.isVerified !== true) {
-    rejections.push({ code: 'unverified', severity: 'reject', reason: 'Token belum terverifikasi dan preset ini mewajibkannya.' });
+  // `requireVerified` tidak boleh hanya berlaku ketika metadata Jupiter
+  // kebetulan ada. Kandidat tanpa data Jupiter (mis. hanya dari Gecko) tidak
+  // punya bukti terverifikasi, dan preset ini mewajibkannya.
+  if (preset.requireVerified && jupiter?.isVerified !== true) {
+    rejections.push({ code: 'unverified', severity: 'reject', reason: 'Token belum terverifikasi (atau status verifikasi tidak tersedia) dan preset ini mewajibkannya.' });
   }
   if (jupiter?.organicLabel) {
     const label = labelRank(jupiter.organicLabel);
@@ -151,12 +170,15 @@ export function evaluateGates(candidate, preset) {
   }
 
   // Pola rug: konsentrasi top-10 tinggi dan tidak ada informasi kunci LP.
-  // Hanya berlaku untuk preset yang mengaktifkan rejectRugPattern.
-  if (preset.rejectRugPattern && safety?.security) {
+  // Ambangnya terpisah dari maxTop10Pct; kalau memakai angka yang sama, gate
+  // ini tidak pernah menambah apa pun karena concentration_high sudah menolak
+  // lebih dulu.
+  const rugThreshold = preset.rugTop10Pct ?? null;
+  if (rugThreshold !== null && safety?.security) {
     const top10 = concentrationFor(candidate).value;
     const lpKnown = safety.security.lpHolderPct != null;
-    if (top10 !== null && top10 > preset.maxTop10Pct && !lpKnown) {
-      rejections.push({ code: 'rug_pattern', severity: 'reject', reason: `Top 10 holder ${top10.toFixed(1)}% di atas ambang ${preset.maxTop10Pct}% dan status kunci LP tidak diketahui; pola rug umum.` });
+    if (top10 !== null && top10 > rugThreshold && !lpKnown) {
+      rejections.push({ code: 'rug_pattern', severity: 'reject', reason: `Top 10 holder ${top10.toFixed(1)}% di atas ambang pola rug ${rugThreshold}% dan status kunci LP tidak diketahui; pola rug umum.` });
     }
   }
 

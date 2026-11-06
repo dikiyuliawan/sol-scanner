@@ -12,7 +12,8 @@ const GATE_LABELS = {
   excluded_mint: 'aset dasar dikecualikan', excluded_tag: 'tag stable/wrapped/major', market_missing: 'pool tidak ditemukan',
   liquidity_low: 'likuiditas di bawah ambang', volume_low: 'volume 24 jam rendah', pool_too_new: 'pool terlalu baru',
   price_change_24h_low: 'penurunan 24 jam terlalu tajam',
-  turnover_low: 'turnover terlalu rendah', turnover_high: 'turnover ekstrem (curiga wash)', mcap_low: 'market cap rendah',
+  turnover_low: 'turnover terlalu rendah', turnover_high: 'turnover ekstrem (curiga wash)', mcap_low: 'market cap rendah', mcap_high: 'market cap di atas batas preset', mcap_unknown: 'market cap tidak diketahui',
+  rug_pattern: 'pola rug pada distribusi holder',
   fdv_ratio: 'FDV jauh di atas market cap', pump_24h: 'lonjakan 24 jam terlalu besar', holders_low: 'holder terlalu sedikit',
   concentration_high: 'konsentrasi top 10 tinggi', mintable: 'mint authority masih aktif', freezable: 'freeze authority masih aktif',
   transfer_fee: 'token punya transfer fee', transfer_hook: 'token punya transfer hook', non_transferable: 'token tidak dapat ditransfer',
@@ -97,10 +98,19 @@ function presetSummary() {
     `FDV/MC ≤ ${t.maxFdvToMcap}×`,
     `turnover ≤ ${t.maxTurnover}×`,
     `perubahan 24j ${t.minPriceChange24hPct}% s.d. +${t.maxPriceChange24hPct}%`,
+    t.maxMarketCapUsd ? `market cap ≤ ${usd0(t.maxMarketCapUsd)}` : null,
     t.requireVerified ? 'wajib verified' : null,
+    t.requireKnownMarketCap ? 'market cap wajib diketahui' : null,
+    t.rugTop10Pct !== null && t.rugTop10Pct !== undefined ? `pola rug top 10 > ${t.rugTop10Pct}% tanpa info LP` : null,
     t.allowUnknownSafety ? 'keamanan boleh unknown (grade dibatasi C)' : 'keamanan wajib diverifikasi GoPlus'
   ].filter(Boolean);
-  hint.textContent = `${preset.label}: ${parts.join(' · ')}. Ambang likuiditas mengikuti preset, jadi skor token yang sama bisa berbeda antar-preset.`;
+  // Bobot skor berbeda per preset: skor 70 di Conservative dan Gem hunter
+  // mengukur hal yang berbeda, jadi bobotnya harus terlihat.
+  const w = preset.weights;
+  const weightNote = w
+    ? ` Bobot skor: keamanan ${w.safety}, likuiditas ${w.liquidity}, momentum ${w.momentum}, struktur ${w.structure}, organic ${w.organic}, upside ${w.upside}.`
+    : '';
+  hint.textContent = `${preset.label}: ${parts.join(' · ')}. Ambang dan bobot mengikuti preset, jadi skor token yang sama bisa berbeda antar-preset.${weightNote}`;
 }
 async function loadConfig() {
   try {

@@ -1,7 +1,7 @@
 import { CONFIG_HASH, DISCOVERY, ENTRY, EXCLUDED_MINTS, getPreset } from './config.mjs';
 import { mergeUniverse, rankCandidates } from './screen/rank.mjs';
 import { evaluateGates } from './screen/gates.mjs';
-import { estimateSlippage } from './screen/score.mjs';
+import { estimateSlippage, scoreCandidate } from './screen/score.mjs';
 import { concentrationFor, secondaryConcentration } from './screen/provenance.mjs';
 import { analyzeStructure, parseCandles } from './analysis/candles.mjs';
 import { buildEntryPlan } from './analysis/entryplan.mjs';
@@ -154,10 +154,15 @@ export function createDiscovery({ jupiter, dexscreener, gecko, goplus, db = null
       const toVerify = new Map();
       if (!preset.allowUnknownSafety) {
         const relaxed = { ...preset, allowUnknownSafety: true };
+        // Urutkan dengan skor awal, bukan likuiditas saja. Preset ketat
+        // memverifikasi token paling menjanjikan lebih dulu, jadi jatah
+        // GoPlus yang terbatas tidak habis untuk token paling besar.
         const preliminary = candidates
           .filter(candidate => evaluateGates(candidate, relaxed).passed)
-          .sort((a, b) => (b.market?.pool?.liquidityUsd ?? 0) - (a.market?.pool?.liquidityUsd ?? 0))
-          .slice(0, DISCOVERY.verifySafetyTop);
+          .map(candidate => ({ candidate, score: scoreCandidate(candidate, relaxed).score ?? -1 }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, DISCOVERY.verifySafetyTop)
+          .map(item => item.candidate);
         for (const candidate of preliminary) toVerify.set(candidate.mint, candidate);
       }
       // Kandidat tanpa data holder, diurutkan dari sumber paling segar.

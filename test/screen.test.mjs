@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { evaluateGates } from '../screen/gates.mjs';
 import { estimateSlippage, gradeFor, scoreCandidate } from '../screen/score.mjs';
 import { mergeUniverse, rankCandidates } from '../screen/rank.mjs';
-import { getPreset, EXCLUDED_MINTS } from '../config.mjs';
+import { getPreset, weightsForPreset, EXCLUDED_MINTS } from '../config.mjs';
 
 const NOW = 1_800_000_000_000;
 const balanced = getPreset('balanced');
@@ -276,4 +276,91 @@ test('balanced menurunkan batas kenaikan 24 jam ke 100% dan menaikkan minimal ho
   const hot = candidate({ pool: { change: { h24: 120 } } });
   assert.ok(evaluateGates(hot, getPreset('balanced')).rejections.some(item => item.code === 'pump_24h'));
   assert.equal(getPreset('balanced').minHolderCount, 1500);
+});
+
+/* ---------------- preset gem hunter ---------------- */
+
+function gemCandidate(overrides = {}) {
+  return candidate({
+    jupiter: {
+      ...candidate().jupiter,
+      isVerified: false,
+      organicLabel: 'low',
+      organicScore: 60,
+      holderCount: 300,
+      audit: { ...candidate().jupiter.audit, topHoldersPercentage: 30 },
+      ...(overrides.jupiter ?? {})
+    },
+    pool: {
+      liquidityUsd: 60_000,
+      marketCap: 300_000,
+      fdv: 340_000,
+      createdAt: NOW - 20 * 3_600_000,
+      change: { h1: 8, h6: 25, h24: 90 },
+      volume: { h24: 180_000 },
+      txns: { h24: { buys: 600, sells: 400 } },
+      ...(overrides.pool ?? {})
+    },
+    ...(overrides.pool || overrides.jupiter ? {} : {})
+  });
+}
+
+test('gem hunter menerima token mikro yang ditolak balanced', () => {
+  const gem = getPreset('gem');
+  const micro = gemCandidate({ pool: { marketCap: 300_000, liquidityUsd: 60_000 }, jupiter: { holderCount: 300 } });
+  assert.equal(evaluateGates(micro, gem).passed, true, JSON.stringify(evaluateGates(micro, gem).rejections));
+  assert.equal(evaluateGates(micro, balanced).passed, false, 'balanced tetap menolak token mikro');
+});
+
+test('gem hunter menolak token yang sudah besar (batas atas market cap)', () => {
+  const big = gemCandidate({ pool: { marketCap: 8_000_000, fdv: 8_500_000 } });
+  const gates = evaluateGates(big, getPreset('gem'));
+  assert.ok(gates.rejections.some(item => item.code === 'mcap_high'));
+});
+
+test('gem hunter menerima kenaikan 24 jam di atas 500% yang ditolak degen', () => {
+  const runner = gemCandidate({ pool: { change: { h1: 20, h6: 180, h24: 900 } } });
+  assert.equal(evaluateGates(runner, getPreset('gem')).passed, true, 'multi-bagger yang sudah naik 900% tidak boleh gugur karena pump gate');
+  assert.ok(evaluateGates(runner, getPreset('degen')).rejections.some(item => item.code === 'pump_24h'));
+});
+
+test('bobot skor berbeda per preset dan berjumlah 100', () => {
+  for (const name of ['conservative', 'balanced', 'degen', 'gem']) {
+    const weights = weightsForPreset(name);
+    const total = Object.values(weights).reduce((sum, value) => sum + value, 0);
+    assert.equal(total, 100, `${name} harus berjumlah 100, dapat ${total}`);
+  }
+  assert.ok(weightsForPreset('gem').upside > weightsForPreset('conservative').upside, 'gem lebih mementingkan upside');
+  assert.ok(weightsForPreset('conservative').safety > weightsForPreset('gem').safety, 'conservative lebih mementingkan keamanan');
+});
+
+test('gate conservative menolak market cap unknown dan verifikasi yang tidak tersedia', () => {
+  const conservative = getPreset('conservative');
+  const unknownMcap = { ...candidate(), market: { pool: { ...candidate().market.pool, marketCap: null, fdv: null } } };
+  assert.ok(evaluateGates(unknownMcap, conservative).rejections.some(item => item.code === 'mcap_unknown'));
+  // Kandidat tanpa metadata Jupiter tidak punya bukti verified: harus gugur,
+  // bukan lolos diam-diam karena objek Jupiter tidak ada.
+  const noJupiter = { ...candidate(), jupiter: null };
+  assert.ok(evaluateGates(noJupiter, conservative).rejections.some(item => item.code === 'unverified'));
+});
+
+test('gate pola rug degen punya ambang sendiri, bukan menyalin maxTop10Pct', () => {
+  const degen = getPreset('degen');
+  assert.equal(degen.maxTop10Pct, 60);
+  assert.equal(degen.rugTop10Pct, 40);
+  const rug = gemCandidate({
+    pool: { marketCap: 300_000 },
+    jupiter: { audit: { ...candidate().jupiter.audit, topHoldersPercentage: 50 } }
+  });
+  rug.safety = { status: 'available', security: { mintable: false, freezable: false, nonTransferable: false, transferFee: false, transferHook: false, top10Pct: 50, holderCount: 300, lpHolderPct: null } };
+  const gates = evaluateGates(rug, degen);
+  assert.ok(gates.rejections.some(item => item.code === 'rug_pattern'), 'top 10 50% > ambang rug 40% harus tertangkap');
+  assert.ok(!gates.rejections.some(item => item.code === 'concentration_high'), 'belum melewati maxTop10Pct 60%');
+});
+
+test('usia pool memakai firstPoolAt Jupiter ketika createdAt tidak tersedia', () => {
+  const noCreatedAt = candidate({ pool: { createdAt: null }, jupiter: { ...candidate().jupiter, firstPoolAt: new Date(NOW - 200 * 3_600_000).toISOString() } });
+  assert.ok(!evaluateGates(noCreatedAt, balanced).rejections.some(item => item.code === 'pool_too_new'), 'fallback Jupiter harus dipakai');
+  const stillUnknown = candidate({ pool: { createdAt: null }, jupiter: { ...candidate().jupiter, firstPoolAt: null } });
+  assert.ok(evaluateGates(stillUnknown, balanced).rejections.some(item => item.code === 'pool_too_new'), 'tanpa sumber usia apa pun tetap unknown');
 });

@@ -60,7 +60,7 @@ Langkah: `npm i -g vercel` → `vercel` → set tiga env var (`TURSO_DATABASE_UR
    - **Rotasi:** daftar ranking Jupiter bergerak lambat (63% overlap antara daftar 1 jam dan 24 jam), jadi refresh berturut-turut menghasilkan token yang sama. Lima posisi teratas tiap daftar tetap dipakai supaya kandidat terbaik tidak hilang, sisanya **bergeser setiap jendela 10 menit**. Pergeseran deterministik: jendela yang sama selalu menghasilkan potongan yang sama.
 2. **Pre-filter di memori.** Kandidat dengan likuiditas Jupiter di bawah ambang preset dibuang sebelum satu pun request tambahan. Maksimal 60 kandidat diteruskan.
 3. **DEX Screener batch berchunk, dengan penjaga orientasi token.** Satu request per 30 mint. DEX Screener mengembalikan **satu** pool per token, dan pool itu belum tentu yang paling likuid; karena itu **harga, market cap, FDV, dan perubahan harga hanya dipakai bila mint adalah token BASE** pool tersebut. Kalau mint hanya muncul sebagai quote token, angka milik token base menjadi `unknown`, bukan ikut ter-atribusikan ke mint yang dicari. Pool dengan mint sebagai base selalu dipilih lebih dulu; likuiditas dan volume 24 jam jadi penentu berikutnya. Ringkasan run menampilkan `Dievaluasi` (jumlah kandidat yang benar-benar punya pool) di samping `checked`.
-4. **Verifikasi keamanan dan jumlah holder sebelum gate.** GoPlus dipanggil untuk (a) **10 kandidat teratas** yang lolos gate lain bila preset mewajibkan keamanan (`allowUnknownSafety: false`, mis. Conservative) — tanpa langkah ini keamanan selalu `unknown` saat ranking sehingga preset ketat mustahil mengembalikan hasil — dan (b) **10 kandidat tanpa jumlah holder Jupiter** (mis. kandidat dari GeckoTerminal), karena tanpa jumlah holder gate akan menolaknya sebagai `unknown` dan sumber paling segar jadi tidak pernah muncul. Bila GoPlus tidak tersedia, kandidat ditolak `safety_unknown`, bukan dianggap aman. Bila tidak ada kandidat yang lolos gate awal, run tetap melaporkan alasannya lewat warning, bukan diam-diam mengembalikan nol hasil.
+4. **Verifikasi keamanan dan jumlah holder sebelum gate.** GoPlus dipanggil untuk (a) **10 kandidat teratas berdasarkan skor awal** yang lolos gate lain bila preset mewajibkan keamanan (`allowUnknownSafety: false`, mis. Conservative) — tanpa langkah ini keamanan selalu `unknown` saat ranking sehingga preset ketat mustahil mengembalikan hasil — dan (b) **10 kandidat tanpa jumlah holder Jupiter** (mis. kandidat dari GeckoTerminal), karena tanpa jumlah holder gate akan menolaknya sebagai `unknown` dan sumber paling segar jadi tidak pernah muncul. Bila GoPlus tidak tersedia, kandidat ditolak `safety_unknown`, bukan dianggap aman. Bila tidak ada kandidat yang lolos gate awal, run tetap melaporkan alasannya lewat warning, bukan diam-diam mengembalikan nol hasil.
 5. **Gate keras (fail-closed).** Kandidat yang gagal langsung digugurkan dengan kode gate dan nilainya, tidak dihapus diam-diam:
    - aset dasar (SOL/USDC/USDT) dan tag `stable`/`wrapped`/`lst`/`major`,
    - likuiditas, volume 24 jam, market cap, dan usia pool di bawah ambang preset,
@@ -70,22 +70,24 @@ Langkah: `npm i -g vercel` → `vercel` → set tiga env var (`TURSO_DATABASE_UR
    - jumlah holder terlalu sedikit atau konsentrasi top 10 terlalu tinggi,
    - mintable/freezable/transfer fee/transfer hook/non-transferable — hanya nilai eksplisit `true` yang menolak,
    - organic label di bawah ambang, atau token belum terverifikasi bila preset mewajibkannya.
-   - **Market cap yang tidak dilaporkan** tidak menggugurkan kandidat, tetapi menghasilkan peringatan `mcap_unknown`: ambang tersebut tidak dievaluasi, dan itu harus terlihat.
+   - **Market cap yang tidak dilaporkan** menghasilkan peringatan `mcap_unknown` pada preset longgar; pada preset yang mewajibkan valuasi terukur, nilai unknown menggugurkan kandidat dan tidak dianggap cukup.
    - **FDV yang tidak dilaporkan** (market cap ada, FDV tidak) menghasilkan peringatan `fdv_unknown`: gate FDV/market cap tidak dievaluasi.
    - **Perubahan harga 24 jam yang tidak dilaporkan** menghasilkan peringatan `price_change_unknown`: gate perubahan harga tidak dievaluasi.
    - **Label organic yang tidak dikenal** (bukan low/medium/high) tidak menggugurkan kandidat dengan alasan keliru; menghasilkan peringatan `organic_label_unknown` dan gate organic tidak dievaluasi.
 6. **Skor 6 komponen berbobot.** Skor total = rata-rata berbobot komponen yang **benar-benar terukur**, dikurangi penalti. Komponen yang belum dianalisis **dikeluarkan** dari rata-rata, bukan diberi nilai netral:
 
-   | Komponen                      | Bobot | Isi utama                                                                |
+   | Komponen                      | Bobot fallback | Isi utama                                                                |
    | ----------------------------- | ----- | ------------------------------------------------------------------------ |
-   | Keamanan kontrak & distribusi | 22    | mint/freeze authority, transfer fee/hook, konsentrasi top 10, LP         |
-   | Likuiditas & eksekusi         | 15    | likuiditas pool, turnover, estimasi slippage untuk notional tetap        |
-   | Momentum & akselerasi volume  | 14    | konsistensi perubahan 1j/6j/24j, akselerasi volume, rasio buy, net buyer |
-   | Struktur & kualitas entry     | 15    | tren EMA20/EMA50, jarak ke high 20 jam, ATR%, RSI14, HH/HL               |
-   | Organic attention             | 9     | organic score Jupiter, porsi volume buy organik                          |
-   | Ruang naik / undervalued      | 25    | market cap (skala log), likuiditas kecil, volume yang belum tercermin di harga, jarak ke high 20 jam |
+   | Keamanan kontrak & distribusi | 22 | mint/freeze authority, transfer fee/hook, konsentrasi top 10, LP         |
+   | Likuiditas & eksekusi         | 15 | likuiditas pool, turnover, estimasi slippage untuk notional tetap        |
+   | Momentum & akselerasi volume  | 14 | konsistensi perubahan 1j/6j/24j, akselerasi volume, rasio buy, net buyer |
+   | Struktur & kualitas entry     | 15 | tren EMA20/EMA50, jarak ke high 20 jam, ATR%, RSI14, HH/HL               |
+   | Organic attention             | 9 | organic score Jupiter, porsi volume buy organik                          |
+   | Ruang naik / undervalued      | 25 | market cap (skala log), likuiditas kecil, volume yang belum tercermin di harga, jarak ke high 20 jam |
 
-   **Ruang naik adalah dimensi baru dan sengaja berbobot besar.** Lima komponen lain menjawab "seberapa sehat token ini"; tanpa komponen ini, token mapan yang sudah likuid selalu menang dan kandidat berpotensi kecil tidak pernah muncul di atas. Market cap dinilai pada skala log (sama-sama satu orde untuk $100k→$1jt dan $1jt→$10jt), likuiditas besar menurunkan skor, turnover tinggi **tanpa** lonjakan harga menandakan akumulasi, dan jarak ke high 20 jam menandai apakah harga sudah extended. Konsekuensinya disengaja: kandidat mikro akan sering mengalahkan token besar pada skor total, dan itu harus dibaca bersama gate serta data keamanannya.
+   Bobot di atas adalah fallback global. Masing-masing preset memakai bobotnya sendiri agar makna skor sesuai profil risiko: Conservative memprioritaskan keamanan (34) dan hanya upside 3; Balanced tetap 22/15/14/15/9/25; Degen memberi upside 30; Gem hunter memberi upside 35 dan momentum 22. Akibatnya skor yang sama pada preset berbeda tidak setara dan UI harus menampilkan bobot preset aktif.
+
+   **Ruang naik adalah dimensi baru dan sengaja berbobot besar pada preset non-Konservatif.** Lima komponen lain menjawab "seberapa sehat token ini"; tanpa komponen ini, token mapan yang sudah likuid selalu menang dan kandidat berpotensi kecil tidak pernah muncul di atas. Market cap dinilai pada skala log, dengan batas atas per preset; likuiditas besar menurunkan skor, turnover tinggi **tanpa** lonjakan harga menandakan akumulasi, dan jarak ke high 20 jam menandai apakah harga sudah extended. Preset Gem hunter juga mempunyai batas atas market cap $5 jt supaya token besar tidak memenuhi daftar hanya karena lolos ambang bawah.
 
    Skor tiap komponen disimpan sebagai desimal dan hanya total akhir yang dibulatkan, supaya perbedaan antar-preset tidak hilang. **Kurva likuiditas mengikuti preset**: token dianggap "likuid penuh" pada 20× ambang minimum preset (Conservative $5 jt, Balanced $3 jt, Degen $1 jt). Sebelumnya patokan atas dikunci di $5 jt untuk semua preset sehingga skor nyaris tidak berubah antar-preset.
 
@@ -102,13 +104,16 @@ Langkah: `npm i -g vercel` → `vercel` → set tiga env var (`TURSO_DATABASE_UR
 
 ### Preset
 
-| Preset             | Likuiditas | Usia pool | Holder  | Top 10 | FDV/MC | Turnover | Perubahan 24j   | Verifikasi                  |
-| ------------------ | ---------- | --------- | ------- | ------ | ------ | -------- | --------------- | --------------------------- |
-| Conservative       | ≥ $250k    | ≥ 7 hari  | ≥ 2.000 | ≤ 25%  | ≤ 1,5× | ≤ 8×     | -25% s.d. +150% | wajib (GoPlus sebelum gate) |
-| Balanced (default) | ≥ $150k    | ≥ 48 jam  | ≥ 1.000 | ≤ 30%  | ≤ 1,5× | ≤ 10×    | -30% s.d. +150% | tidak wajib                 |
-| Degen              | ≥ $60k     | ≥ 1 jam   | ≥ 200   | ≤ 60%  | ≤ 4×   | ≤ 40×    | -50% s.d. +500% | tidak wajib                 |
+| Preset             | Likuiditas | Usia pool | Holder  | Top 10 | Market cap | FDV/MC | Turnover | Perubahan 24j   | Verifikasi                  |
+| ------------------ | ---------- | --------- | ------- | ------ | ---------- | ------ | -------- | --------------- | --------------------------- |
+| Conservative       | ≥ $250k    | ≥ 7 hari  | ≥ 2.000 | ≤ 25%  | ≥ $2 jt | ≤ 1,5× | ≤ 8×     | -15% s.d. +150% | wajib; market cap wajib diketahui |
+| Balanced (default) | ≥ $150k    | ≥ 48 jam  | ≥ 1.500 | ≤ 30%  | ≥ $1 jt | ≤ 1,5× | ≤ 10×    | -30% s.d. +100% | tidak wajib                 |
+| Degen              | ≥ $60k     | ≥ 1 jam   | ≥ 200   | ≤ 60%  | ≥ $100k | ≤ 4×   | ≤ 40×    | -50% s.d. +500% | tidak wajib; pola rug top 10 > 40% tanpa info LP |
+| Gem hunter         | ≥ $50k     | ≥ 1 jam   | ≥ 100   | ≤ 45%  | $50k–$5 jt | ≤ 5× | ≤ 80×    | -60% s.d. +2000% | tidak wajib; tanpa gate pola rug tambahan |
 
-Preset mengubah angka gate **dan** kurva skor likuiditas, jadi token yang sama bisa punya skor dan peringkat berbeda antar-preset. Minimum likuiditas Degen dinaikkan agar kandidat tepat di ambang mempunyai estimasi slippage sekitar 2% atau lebih rendah untuk notional default $500. Gate perubahan 24 jam menolak penurunan tajam; perubahan yang datanya tidak tersedia tetap tidak ditolak oleh gate tersebut. Semua ambang adalah **heuristik yang belum dikalibrasi ulang oleh backtest**; versinya dicatat di setiap run (`configHash`) agar hasil lama tidak tercampur dengan aturan baru. UI menampilkan ambang preset yang sedang aktif di bawah pemilih preset.
+Preset mengubah angka gate, kurva likuiditas, kurva upside, dan bobot skor, jadi token yang sama bisa punya skor dan peringkat berbeda antar-preset. Minimum likuiditas Degen dinaikkan agar kandidat tepat di ambang mempunyai estimasi slippage sekitar 2% atau lebih rendah untuk notional default $500. Gate perubahan 24 jam menolak penurunan tajam; perubahan yang datanya tidak tersedia tetap tidak ditolak oleh gate tersebut. Praset mempertahankan makna profil risikonya: Balanced tetap preset kualitas/momentum default, sedangkan Gem hunter adalah preset terpisah untuk token mikro/baru dan tidak menggantikan Balanced.
+
+Semua ambang adalah **heuristik yang belum dikalibrasi ulang oleh backtest**; versinya dicatat di setiap run (`configHash`) agar hasil lama tidak tercampur dengan aturan baru. Laporan backtest mengelompokkan hasil menurut grade, tahap skor, cohort, dan preset. UI menampilkan ambang serta bobot preset yang sedang aktif di bawah pemilih preset.
 
 ## Rencana entry
 
