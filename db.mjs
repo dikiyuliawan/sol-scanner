@@ -178,6 +178,22 @@ function openSqlite(file) {
             ON CONFLICT(mint) DO UPDATE SET symbol = excluded.symbol, name = excluded.name, last_seen = excluded.last_seen, tags_json = excluded.tags_json`)
         .run(mint, symbol ?? null, name ?? null, at, at, JSON.stringify(tags ?? []));
     },
+    /**
+     * Kapan tiap mint pertama kali terlihat scanner (bukan kapan pool dibuat).
+     * Dipakai untuk menandai token baru — sinyal hidden-gem yang sebelumnya
+     * tersimpan di tabel tetapi tidak pernah dibaca.
+     */
+    async tokenFirstSeen(mints) {
+      const unique = [...new Set(mints.filter(mint => typeof mint === 'string' && mint))];
+      const map = new Map();
+      for (let index = 0; index < unique.length; index += 200) {
+        const chunk = unique.slice(index, index + 200);
+        const placeholders = chunk.map(() => '?').join(',');
+        const rows = stmt(`SELECT mint, first_seen FROM tokens WHERE mint IN (${placeholders})`).all(...chunk);
+        for (const row of rows) map.set(row.mint, row.first_seen);
+      }
+      return map;
+    },
     async addWatch({ mint, note, snapshot, at }) {
       stmt(`INSERT INTO watchlist (mint, added_at, note, snapshot_json, status) VALUES (?, ?, ?, ?, 'watching')
             ON CONFLICT(mint) DO UPDATE SET note = excluded.note, snapshot_json = excluded.snapshot_json`)
@@ -213,7 +229,18 @@ function openSqlite(file) {
       return stmt('SELECT mint, taken_at, price, liquidity_usd, market_cap, fdv, volume_24h, score, grade, json FROM snapshots ORDER BY mint, taken_at').all()
         .map(row => {
           const payload = safeParse(row.json) ?? {};
-          return { mint: row.mint, takenAt: row.taken_at, price: row.price, liquidityUsd: row.liquidity_usd, marketCap: row.market_cap, fdv: row.fdv, volume24h: row.volume_24h, score: row.score, grade: row.grade, scoreStage: payload.scoreStage ?? 'initial' };
+          return {
+            mint: row.mint, takenAt: row.taken_at, price: row.price, liquidityUsd: row.liquidity_usd,
+            marketCap: row.market_cap, fdv: row.fdv, volume24h: row.volume_24h, score: row.score, grade: row.grade,
+            scoreStage: payload.scoreStage ?? 'initial',
+            // Near-miss dipisahkan supaya backtest bisa membandingkan token
+            // yang lolos gate dengan yang digugurkan, bukan mencampurnya.
+            nearMiss: payload.nearMiss === true,
+            preset: payload.preset ?? null,
+            gateCodes: Array.isArray(payload.gates)
+              ? payload.gates.map(gate => gate?.code).filter(code => typeof code === 'string')
+              : []
+          };
         });
     },
     async createJobItems(jobId, items) {
@@ -335,6 +362,17 @@ async function openTurso({ url, authToken }) {
                                    ON CONFLICT(mint) DO UPDATE SET symbol = excluded.symbol, name = excluded.name, last_seen = excluded.last_seen, tags_json = excluded.tags_json`,
         args: [mint, symbol ?? null, name ?? null, at, at, JSON.stringify(tags ?? [])] });
     },
+    async tokenFirstSeen(mints) {
+      const unique = [...new Set(mints.filter(mint => typeof mint === 'string' && mint))];
+      const map = new Map();
+      for (let index = 0; index < unique.length; index += 200) {
+        const chunk = unique.slice(index, index + 200);
+        const placeholders = chunk.map(() => '?').join(',');
+        const result = await client.execute({ sql: `SELECT mint, first_seen FROM tokens WHERE mint IN (${placeholders})`, args: chunk });
+        for (const row of rowsOf(result)) map.set(row.mint, row.first_seen);
+      }
+      return map;
+    },
     async addWatch({ mint, note, snapshot, at }) {
       await client.execute({ sql: `INSERT INTO watchlist (mint, added_at, note, snapshot_json, status) VALUES (?, ?, ?, ?, 'watching')
                                    ON CONFLICT(mint) DO UPDATE SET note = excluded.note, snapshot_json = excluded.snapshot_json`, args: [mint, at, note ?? null, JSON.stringify(snapshot ?? {})] });
@@ -370,7 +408,16 @@ async function openTurso({ url, authToken }) {
       const result = await client.execute('SELECT mint, taken_at, price, liquidity_usd, market_cap, fdv, volume_24h, score, grade, json FROM snapshots ORDER BY mint, taken_at');
       return rowsOf(result).map(row => {
         const payload = safeParse(row.json) ?? {};
-        return { mint: row.mint, takenAt: row.taken_at, price: row.price, liquidityUsd: row.liquidity_usd, marketCap: row.market_cap, fdv: row.fdv, volume24h: row.volume_24h, score: row.score, grade: row.grade, scoreStage: payload.scoreStage ?? 'initial' };
+        return {
+          mint: row.mint, takenAt: row.taken_at, price: row.price, liquidityUsd: row.liquidity_usd,
+          marketCap: row.market_cap, fdv: row.fdv, volume24h: row.volume_24h, score: row.score, grade: row.grade,
+          scoreStage: payload.scoreStage ?? 'initial',
+          nearMiss: payload.nearMiss === true,
+          preset: payload.preset ?? null,
+          gateCodes: Array.isArray(payload.gates)
+            ? payload.gates.map(gate => gate?.code).filter(code => typeof code === 'string')
+            : []
+        };
       });
     },
     async createJobItems(jobId, items) {

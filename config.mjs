@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const CONFIG_VERSION = '2026-11-05.1';
+export const CONFIG_VERSION = '2026-11-06.1';
 
 /**
  * Preset hanya mengubah angka, bukan kode. Semua ambang di sini adalah
@@ -71,12 +71,19 @@ export const PRESETS = {
   }
 };
 
+/**
+ * Enam komponen, total 100. `upside` sengaja diberi bobot besar: scanner ini
+ * dipakai untuk mencari kandidat yang masih punya ruang naik, bukan hanya
+ * token mapan yang sudah likuid. Tanpa komponen ini, skor hanya mengukur
+ * kualitas + momentum dan kandidat kecil selalu kalah dari token besar.
+ */
 export const SCORE_WEIGHTS = {
-  safety: 25,
-  liquidity: 20,
-  momentum: 20,
-  structure: 25,
-  organic: 10
+  safety: 22,
+  liquidity: 15,
+  momentum: 14,
+  structure: 15,
+  organic: 9,
+  upside: 25
 };
 
 export const LIMITS = {
@@ -99,6 +106,17 @@ export const DISCOVERY = {
   universeLimit: 100,
   maxCandidatesForMarket: 60,
   resultLimit: 20,
+  // Kandidat "hampir lolos": diberi skor penuh walau gagal gate, supaya
+  // token yang digugurkan satu gate (sering justru kandidat gem) tetap bisa
+  // dibaca, diurutkan, dan dipelajari. Jumlahnya dibatasi karena tiap baris
+  // membawa payload besar.
+  nearMissLimit: 20,
+  // Batas atas market cap untuk komponen upside. Token di atas batas ini
+  // masih dinilai tetapi ruang naiknya dianggap paling kecil.
+  upsideMaxMarketCapUsd: 50_000_000,
+  // Batas atas likuiditas untuk komponen upside: likuiditas raksasa berarti
+  // token sudah mapan, bukan hidden gem.
+  upsideMaxLiquidityUsd: 2_000_000,
   // 0 = semua baris yang lolos gate ikut di-deep-scan. Job berjalan di
   // belakang dan diberi tempo, jadi tidak menambah waktu tunggu respons.
   deepScanTokens: 0,

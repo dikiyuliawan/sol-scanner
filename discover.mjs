@@ -204,6 +204,14 @@ export function createDiscovery({ jupiter, dexscreener, gecko, goplus, db = null
     }
 
     const rows = ranking.ranked.map(candidate => serializeCandidate(candidate, preset, warnings));
+    // Kandidat "hampir lolos": sudah diberi skor penuh walau gagal gate.
+    // Gate yang gagal tetap disertakan agar tidak terlihat seperti rekomendasi.
+    const nearMissRows = ranking.nearMiss.map(candidate => ({
+      ...serializeCandidate(candidate, preset, warnings),
+      rank: null,
+      gates: candidate.gates,
+      failedGates: candidate.gates.rejections
+    }));
     return {
       runId,
       startedAt,
@@ -216,11 +224,13 @@ export function createDiscovery({ jupiter, dexscreener, gecko, goplus, db = null
         evaluated,
         accepted: ranking.accepted,
         rejected: ranking.rejectedCount,
+        nearMiss: ranking.nearMissCount,
         sources: sourceBreakdown
       },
       warnings,
       rows,
-      [DISCOVERY_CONTEXT]: new Map(ranking.ranked.map(candidate => [candidate.mint, candidate])),
+      nearMissRows,
+      [DISCOVERY_CONTEXT]: new Map([...ranking.ranked, ...ranking.nearMiss].map(candidate => [candidate.mint, candidate])),
       rejected: ranking.rejected,
       // Deep scan mencakup semua baris yang lolos gate (0 = semua). Job
       // berjalan di belakang dengan tempo, jadi respons tidak menunggu.

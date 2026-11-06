@@ -50,7 +50,7 @@
       <div class="section-head"><h3>Ringkasan run</h3><span id="discover-meta" class="tag"></span></div>
       <div id="discover-summary" class="metrics"></div>
       <div id="discover-warnings"></div>
-      <p class="hint">Skor = rata-rata berbobot 5 komponen (keamanan 25, likuiditas 20, momentum 20, struktur 25, organic 10) dikurangi penalti. Komponen yang belum dianalisis dikeluarkan dari rata-rata, bukan diberi nilai netral, sehingga skor awal bersifat sementara sampai deep scan selesai. Grade A ≥ 75, B ≥ 60, C ≥ 45; keamanan unknown membatasi grade maksimum C. “Dievaluasi” = kandidat yang benar-benar punya data pool DEX Screener; sisanya ditolak karena pool tidak ditemukan. Ambang likuiditas mengikuti preset, jadi skor token yang sama bisa berbeda antar-preset.</p>
+      <p class="hint">Skor = rata-rata berbobot 6 komponen (keamanan 22, likuiditas 15, momentum 14, struktur 15, organic 9, ruang naik 25) dikurangi penalti. Komponen yang belum dianalisis dikeluarkan dari rata-rata, bukan diberi nilai netral, sehingga skor awal bersifat sementara sampai deep scan selesai. Komponen “ruang naik” memberi bobot besar pada market cap kecil dan harga yang belum extended; token mapan biasanya kalah di sini, dan itu memang tujuannya. Grade A ≥ 75, B ≥ 60, C ≥ 45; keamanan unknown membatasi grade maksimum C. “Dievaluasi” = kandidat yang benar-benar punya data pool DEX Screener; sisanya ditolak karena pool tidak ditemukan. Ambang likuiditas mengikuti preset, jadi skor token yang sama bisa berbeda antar-preset.</p>
     </section>
 
     <section class="panel">
@@ -65,6 +65,12 @@
         </table>
       </div>
     </section>
+
+    <details class="panel" id="near-miss-panel">
+      <summary>Hampir lolos gate — kandidat berpotensi yang digugurkan <span id="near-miss-count" class="section-note"></span></summary>
+      <p class="hint">Token ini <strong>tidak lolos gate</strong>, tetapi tetap diberi skor penuh supaya bisa dibandingkan. Sering kali yang paling berpotensi justru gugur karena satu ambang (market cap kecil, pool baru, holder sedikit). Baca gate yang gagal sebelum menganggapnya kandidat.</p>
+      <div id="near-miss"></div>
+    </details>
 
     <details class="panel">
       <summary>Kandidat yang digugurkan gate <span id="rejected-count" class="section-note"></span></summary>

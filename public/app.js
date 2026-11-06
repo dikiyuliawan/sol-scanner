@@ -205,7 +205,9 @@ function renderCandidates(data) {
     const token = node('td', undefined, 'token-cell');
     const mintCell = node('small', row.mint);
     enableCopy(mintCell, row.mint);
-    token.append(node('strong', row.symbol ?? 'unknown'), mintCell);
+    const symbolLine = node('strong', row.symbol ?? 'unknown');
+    if (row.isNew) symbolLine.append(node('span', 'baru', 'chip chip-new'));
+    token.append(symbolLine, mintCell);
     tr.append(token);
     const score = node('td'); score.append(scoreBadge(row.score, row.grade, row.confidence)); tr.append(score);
     tr.append(node('td', usd(row.market.priceUsd)));
@@ -339,6 +341,41 @@ function toggleDetail(tr, row, restore = false) {
   tr.after(detail);
 }
 
+function renderNearMiss(data) {
+  const container = $('near-miss');
+  const rows = data.nearMissRows ?? [];
+  container.replaceChildren();
+  $('near-miss-count').textContent = `${rows.length} dari ${data.universe?.nearMiss ?? rows.length} diberi skor`;
+  if (!rows.length) {
+    container.append(node('p', 'Tidak ada kandidat hampir-lolos pada run ini.', 'hint'));
+    return;
+  }
+  const table = node('table', undefined, 'near-miss-table');
+  const thead = node('thead');
+  const hr = node('tr');
+  for (const label of ['Token', 'Skor', 'MCap', 'Likuiditas', '24j', 'Gate yang gagal']) hr.append(node('th', label));
+  thead.append(hr); table.append(thead);
+  const tbody = node('tbody');
+  for (const row of rows) {
+    const tr = node('tr');
+    const token = node('td', undefined, 'token-cell');
+    const mint = node('small', row.mint);
+    enableCopy(mint, row.mint);
+    token.append(node('strong', row.symbol ?? 'unknown'), mint);
+    tr.append(token);
+    const score = node('td'); score.append(scoreBadge(row.score, row.grade, row.confidence)); tr.append(score);
+    tr.append(node('td', compact(row.market?.marketCap)));
+    tr.append(node('td', usd(row.market?.liquidityUsd)));
+    tr.append(changeCell(row.market?.change?.h24));
+    const gates = node('td', undefined, 'near-miss-gates');
+    for (const gate of row.failedGates ?? []) gates.append(node('span', gateShort(gate.code), 'chip chip-bad'));
+    tr.append(gates);
+    tbody.append(tr);
+  }
+  table.append(tbody);
+  container.append(table);
+}
+
 function renderDiscover(data) {
   discoverData = data;
   $('discover-results').hidden = false;
@@ -362,6 +399,7 @@ function renderDiscover(data) {
   $('discover-summary').append(sourceNote);
 
   renderCandidates(data);
+  renderNearMiss(data);
 
   $('rejected-count').textContent = `${data.universe.rejected} ditolak`;
   const rejected = $('rejected');

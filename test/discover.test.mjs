@@ -293,6 +293,35 @@ test('semua sumber universe berkontribusi pada kandidat yang dievaluasi', async 
   assert.ok(selected.has(recent[0].mint), 'kandidat dari daftar token terbaru harus masuk');
 });
 
+test('kandidat yang digugurkan satu gate tetap muncul sebagai near-miss berskor', async () => {
+  // Market cap di bawah ambang balanced: gagal gate, tetapi harus tetap
+  // terlihat sebagai kandidat berpotensi, bukan hilang dari hasil.
+  const gemPool = { ...healthyPool, marketCap: 400_000, fdv: 450_000, liquidityUsd: 180_000 };
+  const sources = fakeSources({ pool: gemPool });
+  const result = await createDiscovery({ ...sources, clock: () => NOW })({ preset: 'balanced', limit: 10, skipDeep: true });
+  assert.equal(result.rows.length, 0, 'tetap tidak lolos gate');
+  assert.equal(result.nearMissRows.length, 1, 'tetapi tercatat sebagai near-miss');
+  const near = result.nearMissRows[0];
+  assert.equal(near.mint, MINT);
+  assert.ok(Number.isInteger(near.score));
+  assert.ok(near.failedGates.some(gate => gate.code === 'mcap_low'));
+  assert.equal(result.universe.nearMiss, 1);
+});
+
+test('token yang baru dilihat scanner ditandai isNew, yang sudah lama tidak', async t => {
+  const sources = fakeSources({ pool: healthyPool });
+  const db = await createDb(':memory:');
+  const server = createServer({ ...sources, db, clock: () => NOW });
+  const base = await withServer(t, server);
+  const first = await (await fetch(`${base}/api/discover?preset=balanced&refresh=1`)).json();
+  assert.equal(first.rows[0].isNew, true, 'run pertama: token baru bagi scanner');
+  assert.ok(first.rows[0].firstSeen, 'first_seen harus dikembalikan');
+  // Run kedua pada waktu yang sama: sudah tercatat, jadi bukan baru.
+  const second = await (await fetch(`${base}/api/discover?preset=balanced&refresh=1`)).json();
+  assert.equal(second.rows[0].isNew, false);
+  db.close();
+});
+
 test('sumber yang mengembalikan daftar kosong menghasilkan warning', async () => {
   const sources = fakeSources({ pool: healthyPool });
   sources.jupiter.topTrending = async () => ({ status: 'available', source: 'Jupiter', tokens: [], fetchedAt: new Date(NOW).toISOString() });

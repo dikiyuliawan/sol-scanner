@@ -30,6 +30,8 @@ Forward-test dari snapshot yang sudah dicatat:
 npm run backtest
 ```
 
+Laporan menjawab tiga hal yang tidak bisa dijawab versi lama: **(1)** apakah kandidat pernah mencapai 2x/5x/10x — kolom `peak` memakai harga tertinggi yang tercatat di dalam jendela, bukan hanya return di titik horizon; **(2)** apakah token **hampir lolos** (digugurkan gate) justru yang multi-bag — baris dipisah per cohort `accepted` vs `near-miss`; **(3)** gate mana yang paling sering membuang multi-bagger — tabel **atribusi gate** mengurutkan kode gate berdasarkan persentase near-miss yang mencapai kelipatan. Default horizon kini `1, 6, 24, 72, 168, 720` jam (7 hari dan 30 hari) karena multi-bagger baru terlihat di horizon panjang.
+
 Diagnosa koneksi ke penyedia data (berguna saat Discover kosong karena jaringan):
 
 ```bash
@@ -72,15 +74,18 @@ Langkah: `npm i -g vercel` → `vercel` → set tiga env var (`TURSO_DATABASE_UR
    - **FDV yang tidak dilaporkan** (market cap ada, FDV tidak) menghasilkan peringatan `fdv_unknown`: gate FDV/market cap tidak dievaluasi.
    - **Perubahan harga 24 jam yang tidak dilaporkan** menghasilkan peringatan `price_change_unknown`: gate perubahan harga tidak dievaluasi.
    - **Label organic yang tidak dikenal** (bukan low/medium/high) tidak menggugurkan kandidat dengan alasan keliru; menghasilkan peringatan `organic_label_unknown` dan gate organic tidak dievaluasi.
-6. **Skor 5 komponen berbobot.** Skor total = rata-rata berbobot komponen yang **benar-benar terukur**, dikurangi penalti. Komponen yang belum dianalisis **dikeluarkan** dari rata-rata, bukan diberi nilai netral:
+6. **Skor 6 komponen berbobot.** Skor total = rata-rata berbobot komponen yang **benar-benar terukur**, dikurangi penalti. Komponen yang belum dianalisis **dikeluarkan** dari rata-rata, bukan diberi nilai netral:
 
    | Komponen                      | Bobot | Isi utama                                                                |
    | ----------------------------- | ----- | ------------------------------------------------------------------------ |
-   | Keamanan kontrak & distribusi | 25    | mint/freeze authority, transfer fee/hook, konsentrasi top 10, LP         |
-   | Likuiditas & eksekusi         | 20    | likuiditas pool, turnover, estimasi slippage untuk notional tetap        |
-   | Momentum & akselerasi volume  | 20    | konsistensi perubahan 1j/6j/24j, akselerasi volume, rasio buy, net buyer |
-   | Struktur & kualitas entry     | 25    | tren EMA20/EMA50, jarak ke high 20 jam, ATR%, RSI14, HH/HL               |
-   | Organic attention             | 10    | organic score Jupiter, porsi volume buy organik                          |
+   | Keamanan kontrak & distribusi | 22    | mint/freeze authority, transfer fee/hook, konsentrasi top 10, LP         |
+   | Likuiditas & eksekusi         | 15    | likuiditas pool, turnover, estimasi slippage untuk notional tetap        |
+   | Momentum & akselerasi volume  | 14    | konsistensi perubahan 1j/6j/24j, akselerasi volume, rasio buy, net buyer |
+   | Struktur & kualitas entry     | 15    | tren EMA20/EMA50, jarak ke high 20 jam, ATR%, RSI14, HH/HL               |
+   | Organic attention             | 9     | organic score Jupiter, porsi volume buy organik                          |
+   | Ruang naik / undervalued      | 25    | market cap (skala log), likuiditas kecil, volume yang belum tercermin di harga, jarak ke high 20 jam |
+
+   **Ruang naik adalah dimensi baru dan sengaja berbobot besar.** Lima komponen lain menjawab "seberapa sehat token ini"; tanpa komponen ini, token mapan yang sudah likuid selalu menang dan kandidat berpotensi kecil tidak pernah muncul di atas. Market cap dinilai pada skala log (sama-sama satu orde untuk $100k→$1jt dan $1jt→$10jt), likuiditas besar menurunkan skor, turnover tinggi **tanpa** lonjakan harga menandakan akumulasi, dan jarak ke high 20 jam menandai apakah harga sudah extended. Konsekuensinya disengaja: kandidat mikro akan sering mengalahkan token besar pada skor total, dan itu harus dibaca bersama gate serta data keamanannya.
 
    Skor tiap komponen disimpan sebagai desimal dan hanya total akhir yang dibulatkan, supaya perbedaan antar-preset tidak hilang. **Kurva likuiditas mengikuti preset**: token dianggap "likuid penuh" pada 20× ambang minimum preset (Conservative $5 jt, Balanced $3 jt, Degen $1 jt). Sebelumnya patokan atas dikunci di $5 jt untuk semua preset sehingga skor nyaris tidak berubah antar-preset.
 
@@ -90,6 +95,10 @@ Langkah: `npm i -g vercel` → `vercel` → set tiga env var (`TURSO_DATABASE_UR
 9. **Diskualifikasi setelah deep scan.** Deep scan bisa menemukan pelanggaran gate yang tidak terlihat saat ranking awal (misalnya mint authority masih aktif). Baris seperti itu ditandai **gugur** beserta kode gate-nya, tidak tetap tampil seolah lolos.
 
 `confidence` menunjukkan porsi bobot yang terukur. Skor dari 75% bobot tidak diperlakukan sama dengan skor dari 100% bobot.
+
+**Kandidat hampir lolos (near-miss).** Gate tetap keras, tetapi kandidat yang gagal gate **tidak lagi dibuang tanpa angka**: semuanya diberi skor penuh dan yang teratas disimpan sebagai `nearMissRows` (maksimum `DISCOVERY.nearMissLimit`, default 20) beserta daftar gate yang gagal. Ini penting untuk tujuan scanner ini: token yang paling berpotensi sering gugur karena satu ambang (market cap kecil, pool baru, holder sedikit). Near-miss juga dicatat sebagai snapshot (`nearMiss: true`) sehingga backtest dapat mengukur gate mana yang sebenarnya membuang kandidat terbaik. Di UI, near-miss berada di panel terpisah di bawah kandidat yang lolos dan tidak pernah dicampur dengan baris yang lolos gate.
+
+**Token baru di scanner.** Tabel `tokens` menyimpan `first_seen`; sekarang nilai itu dibaca **sebelum** snapshot run ini ditulis, sehingga `isNew` berarti "belum pernah terlihat sebelum run ini" (bukan "baru dibuat di chain", dan bukan sekadar sesi baru). Baris baru diberi chip **baru**, dan `firstSeen` dikembalikan di payload. Ini murah dan tidak menambah request ke provider.
 
 ### Preset
 
@@ -161,7 +170,7 @@ Record GoPlus yang menghilangkan kontrol mint/freeze atau transfer berstatus `pa
 
 Persistensi memakai **SQLite** — `node:sqlite` bawaan Node secara lokal (tanpa dependensi), atau **Turso/libSQL** di produksi Vercel bila `TURSO_DATABASE_URL` dan `TURSO_AUTH_TOKEN` diset. Kedua backend mengekspos fasad yang sama; SQL yang dipakai keduanya kompatibel. Bila runtime tidak menyediakan `node:sqlite`, scanner berjalan **stateless** dan melaporkan alasannya di `/api/config` dan `/api/health`, bukan crash.
 
-Tabel: `tokens`, `snapshots`, `discover_runs`, `watchlist`, `plans`, `jobs`, `job_meta`. Setiap run discover menyimpan snapshot harga/likuiditas/skor per kandidat, sehingga `npm run backtest` dapat menghitung return forward per grade dan horizon dari data yang Anda rekam sendiri. **Snapshot diperbarui setelah deep scan**: skor dan grade yang tersimpan adalah skor final (struktur 1 jam + GoPlus) yang benar-benar ditampilkan ke pengguna, bukan skor ranking awal. Tahap skor ditandai `scoreStage` (`initial` atau `deep`) supaya laporan backtest menunjukkan bahwa keduanya tidak sebanding. Database lokal ada di `data/scanner.db` dan tidak pernah dibagikan. Tabel dipangkas otomatis pada saat dibuka: yang disimpan adalah 5.000 `snapshots`, 2.000 `plans`, dan 500 `discover_runs` terbaru (berbasis jumlah, bukan usia — data lama tetap dipakai backtest). Penulisan snapshot per run dibungkus satu transaksi, sehingga kegagalan di tengah tidak meninggalkan setengah data. Kegagalan pencatatan tidak menggagalkan respons discover.
+Tabel: `tokens`, `snapshots`, `discover_runs`, `watchlist`, `plans`, `jobs`, `job_meta`. Setiap run discover menyimpan snapshot harga/likuiditas/skor per kandidat, sehingga `npm run backtest` dapat menghitung return forward per grade dan horizon dari data yang Anda rekam sendiri. **Snapshot diperbarui setelah deep scan**: skor dan grade yang tersimpan adalah skor final (struktur 1 jam + GoPlus) yang benar-benar ditampilkan ke pengguna, bukan skor ranking awal. Tahap skor ditandai `scoreStage` (`initial` atau `deep`) supaya laporan backtest menunjukkan bahwa keduanya tidak sebanding. Kandidat **near-miss** juga dicatat dengan penanda `nearMiss: true` dan daftar `gates` yang gagal, supaya backtest bisa membandingkan kohort dan mengatribusikan gate mana yang membuang kandidat terbaik. Database lokal ada di `data/scanner.db` dan tidak pernah dibagikan. Tabel dipangkas otomatis pada saat dibuka: yang disimpan adalah 5.000 `snapshots`, 2.000 `plans`, dan 500 `discover_runs` terbaru (berbasis jumlah, bukan usia — data lama tetap dipakai backtest). Penulisan snapshot per run dibungkus satu transaksi, sehingga kegagalan di tengah tidak meninggalkan setengah data. Kegagalan pencatatan tidak menggagalkan respons discover.
 
 ## API
 
@@ -208,5 +217,6 @@ Mint yang dipindai dikirim ke DEX Screener, GeckoTerminal, GoPlus, dan Jupiter. 
 - Snapshot pihak ketiga bisa terlambat, keliru, atau tidak lengkap; bukan feed real-time. Tidak ada feed real-time di aplikasi ini: setiap angka berasal dari polling API pihak ketiga dengan batas laju dan cache seperti tertulis di bagian Freshness.
 - Cakupan Jupiter/GeckoTerminal/DEX Screener untuk token baru tidak dijamin.
 - Endpoint batch DEX Screener hanya mengembalikan satu pool per token; pool yang dipakai sudah dicek ulang untuk shortlist, tetapi untuk kandidat di luar shortlist pool itu tetap pilihan provider, bukan hasil pencarian "semua pool".
-- Backtest adalah forward-test dari snapshot yang Anda rekam sendiri, bukan backtest historis penuh: jarak snapshot tidak seragam dan ada bias seleksi. Hanya token yang lolos gate yang pernah dicatat, dan tahap skor (`initial`/`deep`) perlu dibaca bersama.
+- Backtest adalah forward-test dari snapshot yang Anda rekam sendiri, bukan backtest historis penuh: jarak snapshot tidak seragam dan ada bias seleksi. Kandidat yang lolos gate maupun near-miss kini ikut dicatat, tetapi token yang tidak pernah muncul di sumber tidak pernah tercatat. Tahap skor (`initial`/`deep`) perlu dibaca bersama.
+- Kolom `peak` (dan angka 2x/5x/10x) adalah puncak yang **tercatat** di antara snapshot, bukan puncak pasar sebenarnya. Bila tidak ada snapshot di dekat puncak, multi-bagger bisa terlewat — angka ini batas bawah, bukan atas.
 - Tidak ada hasil yang menjamin token aman, dan tidak ada rekomendasi beli/jual.

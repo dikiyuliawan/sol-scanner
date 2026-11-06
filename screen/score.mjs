@@ -1,4 +1,4 @@
-import { GRADE_THRESHOLDS, SCORE_WEIGHTS } from '../config.mjs';
+import { DISCOVERY, GRADE_THRESHOLDS, SCORE_WEIGHTS } from '../config.mjs';
 import { concentrationFor, secondaryConcentration } from './provenance.mjs';
 
 const clamp = (value, min = 0, max = 100) => Math.min(max, Math.max(min, value));
@@ -229,6 +229,86 @@ export function scoreOrganic(candidate) {
   return component('organic', 'Organic attention', SCORE_WEIGHTS.organic, parts.length ? avg(parts) : null, evidence);
 }
 
+/**
+ * Ruang naik / "undervalued" — dimensi yang sebelumnya tidak ada.
+ *
+ * Skor lama (keamanan, likuiditas, momentum, struktur, organic) menjawab
+ * "seberapa sehat token ini", bukan "seberapa besar ruang naiknya". Akibatnya
+ * token mapan selalu menang. Komponen ini menilai kebalikannya:
+ *
+ * - market cap kecil = ruang naik secara matematis lebih besar,
+ * - likuiditas tipis (tetapi masih di atas ambang preset) = belum dijejali modal,
+ * - potensi volume belum tercermin di harga: turnover tinggi tanpa lonjakan
+ *   harga berarti ada akumulasi yang belum ter-priced,
+ * - masih jauh dari puncak (jarak ke high 20 jam) = belum extended.
+ *
+ * Semua angka yang tidak diketahui dikeluarkan, bukan diberi nilai netral dan
+ * bukan dihitung sebagai nol.
+ */
+export function scoreUpside(candidate) {
+  const pool = candidate.market?.pool;
+  if (!pool) return component('upside', 'Ruang naik / undervalued', SCORE_WEIGHTS.upside, null, [], 'Pool tidak tersedia.');
+  const evidence = [];
+  const poolSource = pool.source ?? 'DEX Screener';
+  const parts = [];
+
+  const marketCap = pool.marketCap ?? candidate.jupiter?.marketCap ?? null;
+  if (marketCap !== null && Number.isFinite(marketCap) && marketCap > 0) {
+    // Log scale: selisih $100k → $1M dan $1M → $10M sama-sama satu orde,
+    // jadi kandidat mikro tidak otomatis menang hanya karena angka absolut.
+    const score = clamp(((Math.log10(DISCOVERY.upsideMaxMarketCapUsd) - Math.log10(marketCap)) / (Math.log10(DISCOVERY.upsideMaxMarketCapUsd) - Math.log10(100_000))) * 100);
+    parts.push(score);
+    evidence.push({ metric: 'Ruang naik dari market cap', value: compactUsd(marketCap), source: poolSource });
+  } else {
+    evidence.push({ metric: 'Ruang naik dari market cap', value: 'unknown', source: poolSource });
+  }
+
+  if (pool.liquidityUsd !== null && Number.isFinite(pool.liquidityUsd) && pool.liquidityUsd > 0) {
+    // Likuiditas kecil = belum banyak modal; likuiditas besar = sudah mapan.
+    const score = ramp(DISCOVERY.upsideMaxLiquidityUsd - pool.liquidityUsd, 0, DISCOVERY.upsideMaxLiquidityUsd * 0.9);
+    parts.push(score);
+    evidence.push({ metric: 'Ruang naik dari likuiditas', value: compactUsd(pool.liquidityUsd), source: poolSource });
+  }
+
+  const volumeH24 = pool.volume?.h24 ?? null;
+  const liquidity = pool.liquidityUsd ?? null;
+  const turnover = volumeH24 !== null && liquidity !== null && liquidity > 0 ? volumeH24 / liquidity : null;
+  const changeH1 = pool.change?.h1 ?? candidate.jupiter?.stats?.['1h']?.priceChange ?? null;
+  const changeH24 = pool.change?.h24 ?? candidate.jupiter?.stats?.['24h']?.priceChange ?? null;
+  if (turnover !== null && changeH1 !== null && changeH24 !== null) {
+    // Volume yang ramai tetapi harga belum bergerak jauh = akumulasi diam.
+    // Sebaliknya, turnover tinggi SETELAH lonjakan besar adalah distribusi.
+    const quiet = Math.abs(changeH24) < 40 && Math.abs(changeH1) < 15;
+    const score = quiet ? ramp(turnover, 0.3, 3) : 0;
+    parts.push(score);
+    evidence.push({ metric: 'Volume belum tercermin di harga', value: quiet ? `${turnover.toFixed(2)}× turnover, harga ${signedPct(changeH24)} 24j` : `harga ${signedPct(changeH24)} 24j sudah bergerak; akumulasi tidak terbaca`, source: poolSource });
+  }
+
+  const distance = candidate.structure?.status === 'available' ? candidate.structure.distanceToHighPct ?? null : null;
+  if (distance !== null && Number.isFinite(distance)) {
+    // Jauh di bawah high 20 jam = belum extended; tepat di high = mengejar.
+    const score = band(distance, -5, 3, 20, 60);
+    parts.push(score);
+    evidence.push({ metric: 'Jarak dari high 20 jam', value: `${distance.toFixed(2)}%`, source: 'GeckoTerminal' });
+  } else {
+    // Struktur baru ada setelah deep scan; tidak dihitung sebagai nol.
+    evidence.push({ metric: 'Jarak dari high 20 jam', value: 'belum dianalisis (deep scan)', source: 'GeckoTerminal' });
+  }
+
+  const score = parts.length ? avg(parts) : null;
+  const note = score !== null && score >= 70
+    ? 'Ruang naik tinggi: market cap kecil atau harga belum extended. Ini juga berarti risiko dan likuiditas lebih tipis.'
+    : null;
+  return component('upside', 'Ruang naik / undervalued', SCORE_WEIGHTS.upside, score, evidence, note);
+}
+
+function compactUsd(value) {
+  if (!Number.isFinite(value)) return 'unknown';
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(0)}k`;
+  return `$${value.toFixed(0)}`;
+}
+
 export function penaltiesFor(candidate, preset) {
   const penalties = [];
   const pool = candidate.market?.pool;
@@ -263,7 +343,8 @@ export function scoreCandidate(candidate, preset) {
     scoreLiquidity(candidate, preset),
     scoreMomentum(candidate),
     scoreStructure(candidate),
-    scoreOrganic(candidate)
+    scoreOrganic(candidate),
+    scoreUpside(candidate)
   ];
   const penalties = penaltiesFor(candidate, preset);
   const scored = components.filter(item => item.score !== null);

@@ -140,10 +140,12 @@ test('scoreCandidate mengeluarkan komponen struktur yang belum dianalisis, bukan
   assert.ok(Number.isInteger(scored.score));
   assert.equal(scored.grade, 'C', 'safety unknown membatasi grade');
   assert.ok(scored.penalties.some(penalty => penalty.code === 'safety_unknown'));
-  assert.equal(scored.components.length, 5);
+  assert.equal(scored.components.length, 6);
   assert.ok(scored.components.every(component => component.weight > 0));
   const structure = scored.components.find(component => component.key === 'structure');
   assert.equal(structure.score, null, 'struktur tidak diberi nilai netral');
+  const upside = scored.components.find(component => component.key === 'upside');
+  assert.ok(upside.score !== null, 'ruang naik tetap terukur dari market cap dan likuiditas tanpa deep scan');
   assert.ok(scored.confidence < 1, 'kepercayaan turun saat ada komponen yang tidak terukur');
   assert.ok(scored.missingComponents.includes('structure'));
 });
@@ -187,6 +189,44 @@ test('rankCandidates mengurutkan skor dan memisahkan yang digugurkan', () => {
   assert.equal(result.ranked[0].rank, 1);
   assert.equal(result.ranked[0].mint, good.mint);
   assert.equal(result.rejected[0].rejections[0].code, 'liquidity_low');
+});
+
+test('rankCandidates memberi skor pada kandidat yang digugurkan dan menyimpannya sebagai near-miss', () => {
+  const good = candidate();
+  const thin = candidate({ mint: 'Thin11111111111111111111111111111111111111', pool: { liquidityUsd: 1000 } });
+  const hot = candidate({ mint: 'Hot111111111111111111111111111111111111111', pool: { change: { h24: 400 }, marketCap: 120_000 } });
+  const result = rankCandidates([good, thin, hot], { preset: balanced, limit: 10, nearMissLimit: 10 });
+  assert.equal(result.accepted, 1);
+  assert.equal(result.rejectedCount, 2);
+  assert.equal(result.nearMissCount, 2);
+  // Setiap near-miss punya skor penuh, bukan null: itu inti perbaikannya.
+  for (const item of result.nearMiss) {
+    assert.ok(Number.isInteger(item.scoring.score), 'near-miss harus punya skor');
+    assert.ok(item.gates.rejections.length > 0, 'near-miss tetap membawa gate yang gagal');
+  }
+  // Daftar rejected ringkas juga membawa skor.
+  assert.ok(result.rejected.every(item => Number.isInteger(item.score)));
+  // Diurutkan dari skor tertinggi supaya kandidat terbaik yang hampir lolos di atas.
+  assert.ok((result.nearMiss[0].scoring.score ?? -1) >= (result.nearMiss[1].scoring.score ?? -1));
+});
+
+test('near-miss dibatasi agar payload tidak membengkak', () => {
+  const many = Array.from({ length: 5 }, (_, index) => candidate({
+    mint: `Thin${index}1111111111111111111111111111111111`,
+    pool: { liquidityUsd: 1000 + index }
+  }));
+  const result = rankCandidates(many, { preset: balanced, limit: 10, nearMissLimit: 2 });
+  assert.equal(result.nearMissCount, 5);
+  assert.equal(result.nearMiss.length, 2);
+});
+
+test('komponen ruang naik menilai market cap kecil lebih tinggi dan tidak menghukum unknown', () => {
+  const small = scoreCandidate(candidate({ pool: { marketCap: 200_000, fdv: 220_000, liquidityUsd: 120_000 } }), balanced);
+  const large = scoreCandidate(candidate({ pool: { marketCap: 40_000_000, fdv: 42_000_000, liquidityUsd: 1_500_000 } }), balanced);
+  const upsideOf = scored => scored.components.find(component => component.key === 'upside').score;
+  assert.ok(upsideOf(small) > upsideOf(large), 'market cap kecil harus punya ruang naik lebih besar');
+  const noPool = scoreCandidate(candidate({ market: { pool: null, status: 'empty' } }), balanced);
+  assert.equal(upsideOf(noPool), null, 'tanpa pool, ruang naik unknown dan dikeluarkan dari rata-rata');
 });
 
 test('mergeUniverse menggabungkan sumber dan memilih pool paling likuid', () => {

@@ -1,4 +1,4 @@
-import { PRESETS } from '../config.mjs';
+import { DISCOVERY, PRESETS } from '../config.mjs';
 import { evaluateGates } from './gates.mjs';
 import { scoreCandidate } from './score.mjs';
 
@@ -23,21 +23,48 @@ export function mergeUniverse(entries) {
   return [...byMint.values()];
 }
 
-export function rankCandidates(candidates, { preset, limit = 20 } = {}) {
+/**
+ * Gate dan skor SEMUA kandidat, termasuk yang gagal gate.
+ *
+ * Sebelumnya hanya kandidat yang lolos yang diberi skor, sehingga token yang
+ * digugurkan satu gate (sering justru kandidat berpotensi) hilang tanpa angka
+ * dan tidak pernah tercatat. Sekarang setiap kandidat punya skor, dan yang
+ * gagal disimpan sebagai `nearMiss` agar bisa dibaca, diurutkan, dan dipakai
+ * untuk mengevaluasi gate mana yang terlalu ketat.
+ */
+export function rankCandidates(candidates, { preset, limit = 20, nearMissLimit = DISCOVERY.nearMissLimit } = {}) {
   const accepted = [];
   const rejected = [];
+  const scoredRejected = [];
   for (const candidate of candidates) {
     const gates = evaluateGates(candidate, preset);
+    const scoring = scoreCandidate(candidate, preset);
     if (!gates.passed) {
-      rejected.push({ mint: candidate.mint, symbol: candidate.jupiter?.symbol ?? candidate.market?.pool?.baseSymbol ?? null, rejections: gates.rejections, warnings: gates.warnings });
+      rejected.push({
+        mint: candidate.mint,
+        symbol: candidate.jupiter?.symbol ?? candidate.market?.pool?.baseSymbol ?? null,
+        rejections: gates.rejections,
+        warnings: gates.warnings,
+        score: scoring.score,
+        grade: scoring.grade
+      });
+      scoredRejected.push({ ...candidate, gates, scoring });
       continue;
     }
-    const scoring = scoreCandidate(candidate, preset);
     accepted.push({ ...candidate, gates, scoring });
   }
   accepted.sort((a, b) => (b.scoring.score ?? -1) - (a.scoring.score ?? -1) || (b.market?.pool?.liquidityUsd ?? 0) - (a.market?.pool?.liquidityUsd ?? 0));
+  scoredRejected.sort((a, b) => (b.scoring.score ?? -1) - (a.scoring.score ?? -1) || (b.market?.pool?.liquidityUsd ?? 0) - (a.market?.pool?.liquidityUsd ?? 0));
   const ranked = accepted.slice(0, limit).map((candidate, index) => ({ ...candidate, rank: index + 1 }));
-  return { ranked, accepted: accepted.length, rejected: rejected.slice(0, 40), rejectedCount: rejected.length };
+  const nearMiss = scoredRejected.slice(0, nearMissLimit);
+  return {
+    ranked,
+    accepted: accepted.length,
+    rejected: rejected.slice(0, 40),
+    rejectedCount: rejected.length,
+    nearMiss,
+    nearMissCount: scoredRejected.length
+  };
 }
 
 export function presetOrDefault(name) {
