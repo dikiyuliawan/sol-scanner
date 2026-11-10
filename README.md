@@ -98,6 +98,8 @@ Langkah: `npm i -g vercel` → `vercel` → set tiga env var (`TURSO_DATABASE_UR
 
 `confidence` menunjukkan porsi bobot yang terukur. Skor dari 75% bobot tidak diperlakukan sama dengan skor dari 100% bobot.
 
+UI menvisualkan itu sebagai **rentang**, bukan catatan kecil: gauge skor menggambar bagian pekat sebesar `skor × bobot terukur` (nilai yang pasti bisa dipertanggungjawabkan) dan pita bergaris sampai `skor × bobot terukur + (100 − bobot terukur) × 100` (rentang yang masih mungkin bila komponen yang belum dianalisis bernilai 0 sampai 100). Garis tegak menandai perkiraan titik skornya, dan tick di 45/60/75 menunjukkan ambang grade A/B/C/D. Jadi skor dari 75% bobot terlihat berbeda dari skor dari 100% bobot, bukan hanya berbeda di teks.
+
 **Kandidat hampir lolos (near-miss).** Gate tetap keras, tetapi kandidat yang gagal gate **tidak lagi dibuang tanpa angka**: semuanya diberi skor penuh dan yang teratas disimpan sebagai `nearMissRows` (maksimum `DISCOVERY.nearMissLimit`, default 20) beserta daftar gate yang gagal. Ini penting untuk tujuan scanner ini: token yang paling berpotensi sering gugur karena satu ambang (market cap kecil, pool baru, holder sedikit). Near-miss juga dicatat sebagai snapshot (`nearMiss: true`) sehingga backtest dapat mengukur gate mana yang sebenarnya membuang kandidat terbaik. Di UI, near-miss berada di panel terpisah di bawah kandidat yang lolos dan tidak pernah dicampur dengan baris yang lolos gate.
 
 **Token baru di scanner.** Tabel `tokens` menyimpan `first_seen`; sekarang nilai itu dibaca **sebelum** snapshot run ini ditulis, sehingga `isNew` berarti "belum pernah terlihat sebelum run ini" (bukan "baru dibuat di chain", dan bukan sekadar sesi baru). Baris baru diberi chip **baru**, dan `firstSeen` dikembalikan di payload. Ini murah dan tidak menambah request ke provider.
@@ -213,7 +215,7 @@ Mint yang dipindai dikirim ke DEX Screener, GeckoTerminal, GoPlus, dan Jupiter. 
 - `jobs.mjs`: antrean job in-memory (fallback ketika storage tidak tersedia atau job disuntikkan secara eksplisit, mis. tes).
 - `backtest.mjs`: forward-test offline.
 - `signals.mjs`, `history.mjs`, `risk.mjs`: jalur Inspect (15 menit, GeckoTerminal, GoPlus).
-- `public/`: antarmuka tanpa dependensi eksternal.
+- `public/`: antarmuka tanpa dependensi eksternal. Font **Archivo** (variable) dan **IBM Plex Mono** disimpan sendiri di `public/fonts/` (lisensi OFL) dan disajikan dari origin yang sama, jadi aplikasi tidak pernah meminta font ke pihak ketiga — CSP `default-src 'self'` sudah melarang itu.
 - `test/`: regresi murni dan integrasi HTTP; fixture sintetis hanya untuk tes.
 
 ## Batas yang harus dibaca bersama hasil

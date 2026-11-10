@@ -6,6 +6,12 @@ const percent = value => value === null || value === undefined ? 'unknown' : `${
 const pct = value => value === null || value === undefined ? 'unknown' : `${value.toFixed(1)}%`;
 const age = hours => hours === null || hours === undefined ? 'unknown' : hours < 1 ? `${Math.round(hours * 60)} mnt` : hours < 48 ? `${hours.toFixed(1)} jam` : `${Math.round(hours / 24)} hari`;
 const usd0 = value => value === null || value === undefined ? 'unknown' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value);
+const usdCompact = value => value === null || value === undefined ? 'unknown' : `${value < 0 ? '-' : ''}$${compact(Math.abs(value))}`;
+
+/* Alamat mint 44 karakter memakan lebar kolom; yang ditampilkan cukup
+   untuk dikenali, sementara nilai penuh tetap disalin dan disimpan di
+   judul elemen. */
+const shortMint = mint => (!mint || mint.length <= 18) ? mint : `${mint.slice(0, 11)}…${mint.slice(-5)}`;
 
 /* Label manusiawi untuk kode gate; kode asli tetap ditampilkan agar bisa dicari. */
 const GATE_LABELS = {
@@ -17,12 +23,19 @@ const GATE_LABELS = {
   fdv_ratio: 'FDV jauh di atas market cap', pump_24h: 'lonjakan 24 jam terlalu besar', holders_low: 'holder terlalu sedikit',
   concentration_high: 'konsentrasi top 10 tinggi', mintable: 'mint authority masih aktif', freezable: 'freeze authority masih aktif',
   transfer_fee: 'token punya transfer fee', transfer_hook: 'token punya transfer hook', non_transferable: 'token tidak dapat ditransfer',
-  safety_unknown: 'keamanan belum terverifikasi', unverified: 'token belum terverifikasi', organic_low: 'organic score rendah'
+  safety_unknown: 'keamanan belum terverifikasi', unverified: 'token belum diverifikasi', organic_low: 'organic score rendah'
 };
 const gateLabel = code => GATE_LABELS[code] ? `${GATE_LABELS[code]} (${code})` : code;
 const gateShort = code => GATE_LABELS[code] ?? code;
 
 function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
+
+/* Nilai yang tidak diketahui harus terlihat sebagai tidak diketahui, bukan sebagai nol. */
+const isBlank = value => value === null || value === undefined;
+const blankClass = value => (isBlank(value) ? 'val-unknown' : '');
+
+/* Label kolom kandidat. Dipakai untuk header tabel dan untuk layout bertumpuk di layar kecil. */
+const CANDIDATE_COLS = ['#', 'Token', 'Skor', 'Harga', '1j', '24j', 'Likuiditas', 'Turnover', 'MCap', 'Top10', 'Umur pool', 'Setup', ''];
 
 /** Salin teks ke clipboard: Clipboard API bila ada, fallback textarea. */
 async function copyText(text) {
@@ -34,7 +47,7 @@ async function copyText(text) {
     area.value = text;
     area.style.position = 'fixed';
     area.style.opacity = '0';
-    document.body?.appendChild?.(area);
+    document.body?.append?.(area);
     area.select?.();
     const ok = document.execCommand?.('copy');
     area.remove?.();
@@ -46,7 +59,8 @@ async function copyText(text) {
 function enableCopy(el, getText) {
   if (!el) return;
   el.classList.add('copy-mint');
-  el.title = 'Klik untuk salin alamat mint';
+  const full = typeof getText === 'function' ? getText() : getText;
+  el.title = full ? `${full} · klik untuk menyalin` : 'Klik untuk salin alamat mint';
   el.addEventListener('click', async event => {
     event?.stopPropagation?.();
     const text = typeof getText === 'function' ? getText() : getText;
@@ -61,7 +75,7 @@ function findings(container, items) {
   container.replaceChildren();
   for (const item of items) {
     const level = ['warning', 'unknown', 'info', 'warn', 'reject'].includes(item.level) ? item.level : (['warning', 'unknown', 'info'].includes(item.severity) ? item.severity : 'unknown');
-    const box = node('div', undefined, `finding ${level === 'warn' ? 'warning' : level === 'reject' ? 'warning' : level}`);
+    const box = node('div', undefined, `finding ${level === 'warn' ? 'warning' : level === 'reject' ? 'reject' : level}`);
     box.append(node('strong', `${item.level ?? item.severity ?? 'info'} · ${item.title ?? item.code ?? 'Temuan'}`), node('p', item.reason));
     container.append(box);
   }
@@ -76,11 +90,29 @@ function showTab(name) {
     const on = tab.dataset.tab === name;
     tab.classList.toggle('active', on);
     tab.setAttribute('aria-selected', String(on));
+    // Roving tabindex: hanya tab aktif yang bisa difokuskan lewat Tab.
+    tab.setAttribute('tabindex', on ? '0' : '-1');
   }
   for (const panel of document.querySelectorAll('.tab-panel')) panel.hidden = panel.id !== `tab-${name}`;
   if (name === 'watchlist') loadWatchlist();
 }
-for (const tab of document.querySelectorAll('.tab')) tab.addEventListener('click', () => showTab(tab.dataset.tab));
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.addEventListener('click', () => showTab(tab.dataset.tab));
+  tab.addEventListener('keydown', event => {
+    const tabs = [...document.querySelectorAll('.tab')];
+    const index = tabs.indexOf(tab);
+    if (index < 0) return;
+    let next = null;
+    if (event.key === 'ArrowRight') next = tabs[(index + 1) % tabs.length];
+    if (event.key === 'ArrowLeft') next = tabs[(index - 1 + tabs.length) % tabs.length];
+    if (event.key === 'Home') next = tabs[0];
+    if (event.key === 'End') next = tabs[tabs.length - 1];
+    if (!next) return;
+    event.preventDefault();
+    showTab(next.dataset.tab);
+    if (typeof next.focus === 'function') next.focus();
+  });
+}
 
 /* ---------------- config ---------------- */
 let CONFIG = null;
@@ -112,38 +144,138 @@ function presetSummary() {
     : '';
   hint.textContent = `${preset.label}: ${parts.join(' · ')}. Ambang dan bobot mengikuti preset, jadi skor token yang sama bisa berbeda antar-preset.${weightNote}`;
 }
+
+/** Tabel perbandingan ambang antar preset: angka yang biasanya dibandingkan manual. */
+function renderPresetCompare() {
+  const body = $('preset-rows');
+  if (!body || !CONFIG?.presets) return;
+  body.replaceChildren();
+  for (const [key, preset] of Object.entries(CONFIG.presets)) {
+    const t = preset.thresholds || {};
+    const tr = node('tr');
+    const name = node('td', preset.label, key === $('preset').value ? 'chip chip-ok' : '');
+    const mcap = [t.minMarketCapUsd ? usd0(t.minMarketCapUsd) : 'unknown', t.maxMarketCapUsd ? usd0(t.maxMarketCapUsd) : '—'].join(' – ');
+    const values = [
+      usd0(t.minLiquidityUsd), usd0(t.minVolume24hUsd), age(t.minPoolAgeHours), num(t.minHolderCount),
+      `${t.maxTop10Pct}%`, mcap, `${t.maxFdvToMcap}×`, `${t.maxTurnover}×`,
+      t.requireVerified ? 'wajib' : (t.allowUnknownSafety ? 'boleh unknown' : 'wajib')
+    ];
+    tr.append(name);
+    values.forEach(value => tr.append(node('td', String(value), 'num')));
+    body.append(tr);
+  }
+}
+
+/** Label preset aktif: dari konfigurasi server, atau nama key sebagai cadangan. */
+function presetLabel() {
+  const value = $('preset')?.value;
+  return CONFIG?.presets?.[value]?.label ?? value ?? 'unknown';
+}
+
 async function loadConfig() {
   try {
     CONFIG = await (await fetch('/api/config', { cache: 'no-store' })).json();
     const storage = CONFIG.storage?.available ? 'SQLite aktif' : `SQLite nonaktif: ${CONFIG.storage?.reason ?? 'unknown'}`;
     $('config-hint').textContent = `config ${CONFIG.configHash} · ${storage} · notional ${usd(CONFIG.entry?.notionalUsd)} · maks slippage ${CONFIG.entry?.maxSlippagePct}% · R:R minimum ${CONFIG.entry?.minRiskReward}`;
+    $('tel-config').textContent = CONFIG.configHash ?? 'unknown';
+    $('tel-preset').textContent = presetLabel();
+    $('tel-watch-store').textContent = CONFIG.storage?.available ? 'SQLite lokal' : (CONFIG.storage?.reason ?? 'unknown');
     presetSummary();
+    renderPresetCompare();
   } catch (error) {
     $('config-hint').textContent = `Konfigurasi tidak dapat dimuat: ${error.message}`;
   }
 }
 loadConfig();
-$('preset').addEventListener('change', presetSummary);
+$('preset').addEventListener('change', () => {
+  presetSummary();
+  renderPresetCompare();
+  $('tel-preset').textContent = presetLabel();
+});
 
 /* ---------------- discover ---------------- */
 let discoverData = null;
 let jobTimer = null;
 let jobGeneration = 0;
 const openDetails = new Set();
-function scoreBadge(score, grade, confidence) {
-  const el = node('div', undefined, `score grade-${(grade || 'unknown').toLowerCase()}`);
-  el.append(node('strong', score === null ? '—' : String(score)), node('span', grade ?? 'unknown'));
-  if (typeof confidence === 'number') {
-    // Porsi bobot yang benar-benar terukur: skor dari 75% bobot tidak
-    // boleh dibaca sama dengan skor dari 100%.
-    el.append(node('small', `bobot ${Math.round(confidence * 100)}%`));
+let candidatesSignature = '';
+
+const GRADE_TICKS = [45, 60, 75];
+
+/**
+ * Gauge skor. Isi penuh = skor. Pita bergaris = rentang yang belum
+ * terukur: bila bobot yang belum dianalisis bernilai 0, skor bisa jatuh
+ * ke titik paling kiri; bila bernilai 100, ke paling kanan. Garis tegak
+ * menandai perkiraan titik skornya. Jadi skor dari 75% bobot terlihat
+ * berbeda dari skor dari 100% bobot, bukan hanya berbeda di catatan.
+ */
+function scoreGauge(score, grade, confidence, large) {
+  const el = node('div', undefined, `gauge ${large ? 'gauge-lg ' : ''}grade-${(grade || 'unknown').toLowerCase()}`);
+  const hasScore = typeof score === 'number' && Number.isFinite(score);
+  const bounded = hasScore ? Math.max(0, Math.min(100, score)) : 0;
+  const hasConfidence = typeof confidence === 'number' && Number.isFinite(confidence);
+  const measured = hasConfidence ? Math.max(0, Math.min(1, confidence)) : null;
+  const floor = measured === null ? bounded : bounded * measured;
+  const ceiling = measured === null ? bounded : bounded * measured + (1 - measured) * 100;
+
+  const value = node('div', hasScore ? String(score) : '—', 'gauge-value');
+  const track = node('div', undefined, 'gauge-track');
+  const solid = node('i', undefined, 'gauge-solid');
+  solid.style.width = `${floor}%`;
+  track.append(solid);
+  if (measured !== null && measured < 1) {
+    const band = node('i', undefined, 'gauge-band');
+    band.style.left = `${floor}%`;
+    band.style.width = `${Math.max(0, ceiling - floor)}%`;
+    track.append(band);
   }
+  if (hasScore) {
+    const mark = node('i', undefined, 'gauge-mark');
+    mark.style.left = `${bounded}%`;
+    track.append(mark);
+  }
+  // Tick grade hanya digambar di gauge besar: di kolom tabel tiga tick
+  // terlalu rapat dan hanya jadi noise.
+  if (large) {
+    for (const tick of GRADE_TICKS) {
+      const mark = node('i', undefined, 'gauge-tick');
+      mark.style.left = `${tick}%`;
+      track.append(mark);
+    }
+  }
+  const letter = node('div', grade ?? 'unknown', 'gauge-grade');
+  el.append(value, track, letter);
+  el.title = hasScore
+    ? `Skor ${score}. Grade ${grade ?? 'unknown'}.${measured === null ? ' Porsi bobot terukur tidak diketahui.' : measured >= 1 ? ' Seluruh bobot terukur.' : ` Bobot terukur ${Math.round(measured * 100)}%, rentang mungkin ${Math.round(floor)}–${Math.round(ceiling)}.`}`
+    : 'Skor belum dihitung.';
   return el;
 }
 
-function changeCell(value) {
-  const el = node('td', percent(value));
-  if (value !== null && value !== undefined) el.className = value > 0 ? 'up' : value < 0 ? 'down' : '';
+/** Rentang skor yang mungkin, untuk dibaca di rincian kandidat. */
+function scoreRange(score, confidence) {
+  if (typeof score !== 'number' || !Number.isFinite(score)) return 'Skor belum dihitung.';
+  const grade = score >= 75 ? 'A' : score >= 60 ? 'B' : score >= 45 ? 'C' : 'D';
+  if (typeof confidence !== 'number' || !Number.isFinite(confidence)) return `Skor ${score} · porsi bobot terukur tidak diketahui, jadi rentang skornya tidak bisa dihitung · grade ${grade}.`;
+  const measured = Math.max(0, Math.min(1, confidence));
+  if (measured >= 1) return `Skor ${score} · seluruh bobot terukur, jadi skor ini final · grade ${grade}.`;
+  const floor = score * measured;
+  const ceiling = score * measured + (1 - measured) * 100;
+  return `Skor ${score} · bobot terukur ${Math.round(measured * 100)}% · rentang mungkin ${Math.round(floor)}–${Math.round(ceiling)} · grade ${grade}.`;
+}
+
+/** Chip status: penanda bentuk + teks, bukan warna saja. */
+function statusChip(text, className, title) {
+  const chip = node('span', undefined, `chip ${className}`);
+  const label = node('span', text);
+  chip.append(label);
+  if (title) chip.title = title;
+  return chip;
+}
+
+function changeCell(value, label) {
+  const cls = isBlank(value) ? 'num val-unknown' : `num ${value > 0 ? 'up' : value < 0 ? 'down' : ''}`;
+  const el = node('td', percent(value), cls);
+  el.dataset.label = label;
   return el;
 }
 
@@ -194,8 +326,24 @@ function freshnessPanel(row) {
   return box;
 }
 
+function candidateCell(label, text, className) {
+  const td = node('td', text, className);
+  td.dataset.label = label;
+  return td;
+}
+
 function renderCandidates(data) {
   const tbody = $('candidates');
+  // Baris tidak dibangun ulang kalau tidak ada yang berubah: rebuild
+  // setiap 2 detikonomie memindahkan fokus keyboard dan-what the user was reading.
+  const signature = data.rows.map(row => [
+    row.mint, row.score, row.grade, row.confidence, row.deepState, row.deepReason,
+    row.market?.priceUsd, row.market?.liquidityUsd, row.disqualified?.length ?? 0, row.entryPlan?.status
+  ].join(',')).join('|');
+  if (signature === candidatesSignature) return;
+  candidatesSignature = signature;
+
+  const focused = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute('data-mint') : null;
   tbody.replaceChildren();
   if (!data.rows.length) {
     const row = node('tr');
@@ -211,27 +359,40 @@ function renderCandidates(data) {
   for (const row of data.rows) {
     const tr = node('tr', undefined, 'candidate-row');
     tr.dataset.mint = row.mint;
-    tr.append(node('td', String(row.rank)));
-    const token = node('td', undefined, 'token-cell');
-    const mintCell = node('small', row.mint);
+    if (row.disqualified?.length) tr.className = 'candidate-row disqualified';
+    else if (row.deepState === 'antri') tr.className = 'candidate-row queued';
+    else if (row.deepState === 'gagal') tr.className = 'candidate-row failed';
+    tr.append(candidateCell('#', String(row.rank), 'num'));
+    const token = node('td', undefined, 'cell-token token-cell');
+    const mintCell = node('small', shortMint(row.mint));
     enableCopy(mintCell, row.mint);
     const symbolLine = node('strong', row.symbol ?? 'unknown');
-    if (row.isNew) symbolLine.append(node('span', 'baru', 'chip chip-new'));
+    if (row.isNew) symbolLine.append(statusChip('baru', 'chip-new'));
     token.append(symbolLine, mintCell);
     tr.append(token);
-    const score = node('td'); score.append(scoreBadge(row.score, row.grade, row.confidence)); tr.append(score);
-    tr.append(node('td', usd(row.market.priceUsd)));
-    tr.append(changeCell(row.market.change?.h1));
-    tr.append(changeCell(row.market.change?.h24));
-    tr.append(node('td', usd(row.market.liquidityUsd)));
-    tr.append(node('td', row.market.turnover === null ? 'unknown' : `${row.market.turnover.toFixed(2)}×`));
-    tr.append(node('td', compact(row.market.marketCap)));
-    tr.append(node('td', pct(row.safety.top10Pct)));
-    tr.append(node('td', age(row.market.ageHours)));
-    const setup = node('td');
+    const score = candidateCell('Skor', undefined, 'cell-score');
+    score.append(scoreGauge(row.score, row.grade, row.confidence));
+    tr.append(score);
+    const price = candidateCell('Harga', usd(row.market.priceUsd), `num ${blankClass(row.market.priceUsd)}`);
+    price.title = row.market?.fetchedAt ? `Data pasar diambil ${ageOf(row.market.fetchedAt)}` : 'Waktu pengambilan data pasar unknown';
+    tr.append(price);
+    tr.append(changeCell(row.market.change?.h1, '1j'));
+    tr.append(changeCell(row.market.change?.h24, '24j'));
+    const liquidity = candidateCell('Likuiditas', usd0(row.market.liquidityUsd), `num ${blankClass(row.market.liquidityUsd)}`);
+    liquidity.title = row.market?.source ? `Sumber: ${row.market.source}` : 'Sumber data likuiditas unknown';
+    tr.append(liquidity);
+    const turnover = candidateCell('Turnover', row.market.turnover === null ? 'unknown' : `${row.market.turnover.toFixed(2)}×`, `num ${blankClass(row.market.turnover)}`);
+    tr.append(turnover);
+    const mcap = candidateCell('MCap', usdCompact(row.market.marketCap), `num ${blankClass(row.market.marketCap)}`);
+    tr.append(mcap);
+    const top10 = candidateCell('Top10', pct(row.safety.top10Pct), `num ${blankClass(row.safety.top10Pct)}`);
+    if (row.safety?.top10Source) top10.title = `Sumber konsentrasi holder: ${row.safety.top10Source}`;
+    tr.append(top10);
+    const poolAge = candidateCell('Umur pool', age(row.market.ageHours), `num ${blankClass(row.market.ageHours)}`);
+    tr.append(poolAge);
+    const setup = candidateCell('Setup');
     if (row.disqualified?.length) {
-      setup.append(node('span', `gugur: ${gateShort(row.disqualified[0].code)}`, 'chip chip-bad'));
-      tr.classList.add('disqualified');
+      setup.append(statusChip(`gugur: ${gateShort(row.disqualified[0].code)}`, 'chip-bad', row.disqualified.map(item => gateLabel(item.code)).join(' · ')));
     } else {
       // Tiga keadaan yang berbeda: sudah dianalisis, masih antri, atau gagal
       // dianalisis. "pending" lama membuat baris terlihat sedang berubah
@@ -240,31 +401,55 @@ function renderCandidates(data) {
         : row.deepState === 'antri' ? 'antri'
           : (row.entryPlan?.setup ?? row.structure?.trend ?? 'tidak dianalisis');
       const ok = row.deepState !== 'antri' && row.deepState !== 'gagal' && row.entryPlan?.status === 'plan';
-      setup.append(node('span', state, `chip ${ok ? 'chip-ok' : 'chip-muted'}`));
+      setup.append(statusChip(state, ok ? 'chip-ok' : row.deepState === 'gagal' ? 'chip-warn' : 'chip-muted', row.deepReason ?? state));
     }
     tr.append(setup);
-    const action = node('td');
+    const action = candidateCell('', undefined, 'cell-action');
     const detailButton = node('button', 'Rincian', 'text-button');
     detailButton.type = 'button';
+    detailButton.setAttribute('data-mint', row.mint);
+    detailButton.setAttribute('aria-expanded', openDetails.has(row.mint) ? 'true' : 'false');
     detailButton.addEventListener('click', event => { event.stopPropagation(); toggleDetail(tr, row); });
     action.append(detailButton);
     tr.append(action);
     tbody.append(tr);
     if (openDetails.has(row.mint)) toggleDetail(tr, row, true);
   }
+  // Fokus keyboard harus kembali ke tombol yang sama setelah tabel dibangun ulang.
+  if (focused && typeof document.querySelector === 'function') {
+    const target = document.querySelector(`[data-mint="${focused}"]`);
+    if (target && typeof target.focus === 'function') target.focus();
+  }
 }
 
 function toggleDetail(tr, row, restore = false) {
   const next = tr.nextElementSibling;
-  if (!restore && next?.classList.contains('detail-row')) { next.remove(); openDetails.delete(row.mint); return; }
+  if (!restore && next?.classList.contains('detail-row')) {
+    next.remove();
+    openDetails.delete(row.mint);
+    tr.querySelector?.('button')?.setAttribute?.('aria-expanded', 'false');
+    return;
+  }
   openDetails.add(row.mint);
+  tr.querySelector?.('button')?.setAttribute?.('aria-expanded', 'true');
   const detail = node('tr', undefined, 'detail-row');
-  const cell = node('td');
+  const cell = node('td', undefined, 'detail-cell');
   cell.colSpan = 13;
 
   const grid = node('div', undefined, 'detail-grid');
   const components = node('div');
   components.append(node('h4', 'Komponen skor'));
+  const gauge = scoreGauge(row.score, row.grade, row.confidence, true);
+  components.append(gauge);
+  const scale = node('div', undefined, 'gauge-scale');
+  for (const [position, label] of [[0, '0'], [45, '45 C'], [60, '60 B'], [75, '75 A'], [100, '100']]) {
+    const tick = node('span', label);
+    tick.style.left = `${position}%`;
+    tick.style.transform = position === 0 ? 'none' : position === 100 ? 'translateX(-100%)' : 'translateX(-50%)';
+    scale.append(tick);
+  }
+  components.append(scale);
+  components.append(node('p', scoreRange(row.score, row.confidence), 'hint'));
   for (const item of row.components) {
     const line = node('div', undefined, 'component');
     line.append(node('span', item.label));
@@ -369,16 +554,16 @@ function renderNearMiss(data) {
   for (const row of rows) {
     const tr = node('tr');
     const token = node('td', undefined, 'token-cell');
-    const mint = node('small', row.mint);
+    const mint = node('small', shortMint(row.mint));
     enableCopy(mint, row.mint);
     token.append(node('strong', row.symbol ?? 'unknown'), mint);
     tr.append(token);
-    const score = node('td'); score.append(scoreBadge(row.score, row.grade, row.confidence)); tr.append(score);
-    tr.append(node('td', compact(row.market?.marketCap)));
-    tr.append(node('td', usd(row.market?.liquidityUsd)));
-    tr.append(changeCell(row.market?.change?.h24));
+    const score = node('td', undefined, 'cell-score'); score.append(scoreGauge(row.score, row.grade, row.confidence)); tr.append(score);
+    tr.append(node('td', usdCompact(row.market?.marketCap), 'num'));
+    tr.append(node('td', usd0(row.market?.liquidityUsd), 'num'));
+    tr.append(changeCell(row.market?.change?.h24, '24j'));
     const gates = node('td', undefined, 'near-miss-gates');
-    for (const gate of row.failedGates ?? []) gates.append(node('span', gateShort(gate.code), 'chip chip-bad'));
+    for (const gate of row.failedGates ?? []) gates.append(statusChip(gateShort(gate.code), 'chip-bad', gateLabel(gate.code)));
     tr.append(gates);
     tbody.append(tr);
   }
@@ -402,11 +587,10 @@ function renderDiscover(data) {
   // Kontribusi per sumber: sumber yang tidak berkontribusi harus terlihat,
   // bukan tercampur dalam satu angka universe.
   const sources = data.universe?.sources ?? {};
-  const sourceNote = node('p', undefined, 'hint');
+  const sourceNote = $('discover-sources');
   sourceNote.textContent = Object.keys(sources).length
     ? `Kandidat yang dievaluasi per sumber — ${Object.entries(sources).map(([label, count]) => `${label}: ${count}`).join(' · ')}.`
     : 'Kandidat yang dievaluasi per sumber: unknown.';
-  $('discover-summary').append(sourceNote);
 
   renderCandidates(data);
   renderNearMiss(data);
@@ -416,7 +600,7 @@ function renderDiscover(data) {
   rejected.replaceChildren();
   if (!data.rejected.length) rejected.append(node('p', 'Tidak ada kandidat yang digugurkan pada daftar ini.', 'hint'));
   for (const item of data.rejected) {
-    const box = node('div', undefined, 'finding warning');
+    const box = node('div', undefined, 'finding reject');
     box.append(node('strong', `${item.symbol ?? item.mint.slice(0, 8)} · ${item.rejections.length} gate`));
     const list = node('ul');
     for (const rejection of item.rejections) list.append(node('li', `${gateLabel(rejection.code)}: ${rejection.reason}`));
@@ -428,7 +612,27 @@ function renderDiscover(data) {
   // Semua baris masuk antrean deep scan: baris yang belum dianalisis
   // ditandai "antri", bukan "pending" yang terlihat seperti sedang berubah.
   for (const row of data.rows) row.deepState = data.jobId ? 'antri' : 'tidak dianalisis';
+  $('tel-run').textContent = data.finishedAt ? ageOf(data.finishedAt) : 'baru saja';
+  $('tel-deep').textContent = data.jobId ? `0/${data.jobTotal}` : 'tidak ada';
   if (data.jobId) pollJob(data.jobId, data.jobTotal);
+}
+
+/**
+ * Urutan baris: selama run, urutan awal tidak berubah kecuali ada kandidat
+ * yang gugur (candidates yang gugur tidak boleh mendahului yang lolos).
+ * Ranking penuh baru dihitung ulang setelah job selesai, supaya baris tidak
+ * melompat di bawah cursor sambil dibaca.
+ */
+function sortRows(rows, final) {
+  rows.sort((a, b) => Number(Boolean(a.disqualified?.length)) - Number(Boolean(b.disqualified?.length))
+    || (final ? (b.score ?? -1) - (a.score ?? -1) : 0));
+  rows.forEach((row, index) => { row.rank = index + 1; });
+}
+
+/** Sorot singkat pada baris yang baru saja berubah isinya. */
+function flashRow(tr) {
+  tr.className = `${tr.className} flash`;
+  tr.addEventListener?.('animationend', () => { tr.className = tr.className.replace(/\s*flash\b/, ''); });
 }
 
 function pollJob(jobId, total) {
@@ -457,12 +661,15 @@ function pollJob(jobId, total) {
     }
     if (generation !== jobGeneration || !discoverData) return;
     $('deep-status').textContent = `deep scan: ${job.completed}/${total}${job.failures ? ` · ${job.failures} gagal` : ''}`;
+    $('tel-deep').textContent = `${job.completed}/${total}${job.failures ? ` · ${job.failures} gagal` : ''}`;
     const done = new Set();
+    const updated = new Set();
     for (const result of job.results) {
       if (!discoverData) continue;
       const row = discoverData.rows.find(item => item.mint === result.mint);
       if (!row) continue;
       done.add(result.mint);
+      updated.add(result.mint);
       if (!result.ok) {
         // Gagal dianalisis: alasannya ditampilkan, bukan disembunyikan di
         // balik label generik.
@@ -492,10 +699,13 @@ function pollJob(jobId, total) {
     }
     // Perbarui seluruh bukti, setup, dan status gugur pada setiap progres;
     // kandidat gugur tidak boleh dipromosikan oleh skor tingginya.
-    discoverData.rows.sort((a, b) => Number(Boolean(a.disqualified?.length)) - Number(Boolean(b.disqualified?.length)) || (b.score ?? -1) - (a.score ?? -1));
-    discoverData.rows.forEach((row, index) => { row.rank = index + 1; });
+    const final = job.status === 'done';
+    sortRows(discoverData.rows, final);
     renderCandidates(discoverData);
-    if (job.status === 'done') {
+    for (const tr of $('candidates').children) {
+      if (updated.has(tr.dataset.mint)) flashRow(tr);
+    }
+    if (final) {
       $('discover-status').textContent = `Deep scan selesai · ${discoverData.rows.filter(row => !row.disqualified?.length).length} kandidat tampil masih lolos gate · ${job.failures || 0} gagal dianalisis.`;
     } else if (Date.now() < deadline) {
       jobTimer = setTimeout(tick, 2000);
@@ -515,6 +725,7 @@ $('discover-button').addEventListener('click', async () => {
   jobGeneration++;
   discoverData = null;
   openDetails.clear();
+  candidatesSignature = '';
   $('discover-button').disabled = true;
   $('discover-results').hidden = true;
   $('discover-status').className = '';
@@ -560,6 +771,7 @@ function renderHistory(data) {
   findings($('setup-flags'), (h.flags || []).map(flag => ({ level: flag.severity === 'warn' ? 'warning' : flag.severity, title: flag.code, reason: flag.reason })));
   $('history-status').textContent = `historis: ${h.status}`;
   $('history-source').textContent = `${h.source} · pool ${h.poolAddress || 'unknown'} · token diminta ${data.mint} · USD · ${h.timeframe}. ${h.fetchedAt ? `Diambil ${new Date(h.fetchedAt).toLocaleString('id-ID')}${h.historyCached ? ' (cache lokal ≤ 60 detik)' : ''}.` : 'Belum ada respons candle terverifikasi.'} Cache provider 60 detik. ${h.reason || ''}${h.droppedRows ? ` ${h.droppedRows} baris rusak dibuang.` : ''}`;
+  $('tel-candle').textContent = h.fetchedAt ? ageOf(h.fetchedAt) : 'belum ada';
   const values = [
     ['Close 15m (bukan harga live)', usd(m.closeUsd)], ['SMA20 close (5 jam)', usd(m.sma20Usd)],
     ['Resistance 20 candle sebelumnya', usd(m.previousHighUsd)], ['Support 20 candle sebelumnya', usd(m.previousLowUsd)],
@@ -588,6 +800,9 @@ function render(data) {
   $('token-mint').textContent = data.mint;
   $('timestamp').textContent = `Snapshot diterima ${new Date(data.checkedAt).toLocaleString('id-ID')} (${ageOf(data.checkedAt)}) · ${data.cached ? 'cache ≤ 30 detik' : 'scan baru'}${data.refreshed ? ' · data disegarkan' : ''}${data.market?.fetchedAt ? ` · data pasar ${ageOf(data.market.fetchedAt)}` : ''}`;
   $('market-status').textContent = `pasar: ${market.status}`;
+  $('tel-snapshot').textContent = ageOf(data.checkedAt);
+  $('tel-market').textContent = market.fetchedAt ? ageOf(market.fetchedAt) : 'belum ada';
+  $('tel-safety').textContent = risk.fetchedAt ? ageOf(risk.fetchedAt) : 'belum ada';
   renderHistory(data);
   const metrics = [
     ['Harga mint', usd(primary?.priceUsd)], ['Likuiditas pool utama', usd(primary?.liquidityUsd)],
@@ -608,7 +823,7 @@ function render(data) {
     const row = node('tr');
     const label = node('td', `${pool.base} / ${pool.quote} · ${pool.dex}`);
     label.append(node('small', pool.address || 'alamat pool unknown'));
-    row.append(label, node('td', pool.targetIsBase ? 'base' : 'quote'), node('td', usd(pool.priceUsd)), node('td', usd(pool.liquidityUsd)), node('td', usd(pool.volume24h)));
+    row.append(label, node('td', pool.targetIsBase ? 'base' : 'quote'), node('td', usd(pool.priceUsd), 'num'), node('td', usd(pool.liquidityUsd), 'num'), node('td', usd(pool.volume24h), 'num'));
     $('pools').append(row);
   }
   if (!market.pairs.length) { const row = node('tr'), cell = node('td', 'Tidak ada pool untuk ditampilkan. Ini bukan bukti token aman.'); cell.colSpan = 5; row.append(cell); $('pools').append(row); }
@@ -670,6 +885,7 @@ async function loadWatchlist() {
     if (generation !== watchGeneration) return;
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     $('watch-status').textContent = data.items.length ? `${data.items.length} token dipantau.` : 'Watchlist kosong. Tambahkan dari Discover atau Inspect.';
+    $('tel-watch-count').textContent = String(data.items.length);
     const items = $('watch-items');
     items.replaceChildren();
     for (const item of data.items) {
@@ -709,6 +925,9 @@ async function loadWatchlist() {
       runs.append(line);
     }
     if (!data.history.length) runs.append(node('p', 'Belum ada run discovery tersimpan.', 'hint'));
+    const last = data.history[0];
+    $('tel-watch-run').textContent = last ? ageOf(last.startedAt) : 'belum ada';
+    $('tel-watch-pass').textContent = last ? `${last.accepted}/${last.candidates} lolos` : 'belum ada';
   } catch (error) {
     if (generation !== watchGeneration) return;
     $('watch-status').className = 'error';

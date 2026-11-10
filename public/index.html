@@ -7,184 +7,260 @@
 <link rel="stylesheet" href="/styles.css">
 <script src="/app.js" defer></script>
 </head>
-<body><main>
-<header>
-  <div class="brand"><span class="mark">S</span><span>SOLANA / SCANNER</span></div>
-  <span class="tag">READ-ONLY · V3</span>
+<body>
+<a class="skip" href="#tab-discover">Lewati ke konten</a>
+
+<header class="masthead">
+  <div class="masthead-word">
+    <span class="mark">S</span>
+    <span class="wordmark">SOLANA / SCANNER</span>
+  </div>
+  <p class="masthead-meta">
+    <span class="tag">READ-ONLY · V3</span>
+    <span id="config-hint">Memuat konfigurasi…</span>
+  </p>
 </header>
 
-<nav class="tabs" role="tablist">
-  <button class="tab active" data-tab="discover" role="tab" aria-selected="true">Discover</button>
-  <button class="tab" data-tab="inspect" role="tab" aria-selected="false">Inspect</button>
-  <button class="tab" data-tab="watchlist" role="tab" aria-selected="false">Watchlist</button>
+<nav class="index" role="tablist" aria-label="Bagian scanner">
+  <button class="tab" id="tabbtn-discover" data-tab="discover" role="tab" aria-selected="true" aria-controls="tab-discover">Discover</button>
+  <button class="tab" id="tabbtn-inspect" data-tab="inspect" role="tab" aria-selected="false" aria-controls="tab-inspect" tabindex="-1">Inspect</button>
+  <button class="tab" id="tabbtn-watchlist" data-tab="watchlist" role="tab" aria-selected="false" aria-controls="tab-watchlist" tabindex="-1">Watchlist</button>
 </nav>
 
+<main class="sheet">
+
 <!-- ======================= DISCOVER ======================= -->
-<section id="tab-discover" class="tab-panel">
-  <section class="intro">
-    <p class="eyebrow">RANKED WATCHLIST · BUKAN PERINTAH BUY</p>
+<section id="tab-discover" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-discover" tabindex="-1">
+  <div class="band">
+    <p class="margin-note">RANKED WATCHLIST · BUKAN PERINTAH BUY</p>
     <h1>Temukan kandidat,<br>lalu baca alasannya.</h1>
-    <p class="sub">Kandidat diambil dari Jupiter dan GeckoTerminal, disaring gate keras, lalu diberi skor yang bisa direkonstruksi per komponen. GeckoTerminal hanya dipakai untuk shortlist agar tidak kena rate limit.</p>
-  </section>
+    <p class="standfirst">Kandidat diambil dari Jupiter dan GeckoTerminal, disaring gate keras, lalu diberi skor yang bisa direkonstruksi per komponen. GeckoTerminal hanya dipakai untuk shortlist agar tidak kena rate limit.</p>
+  </div>
 
-  <section class="panel scan-panel">
-    <div class="input-row wrap">
-      <div class="field">
-        <label for="preset">Preset risiko</label>
-        <select id="preset">
-          <option value="balanced" selected>Balanced — likuid, pool ≥ 48 jam</option>
-          <option value="conservative">Conservative — likuid, pool ≥ 7 hari, verified</option>
-          <option value="degen">Degen — izinkan pool baru &amp; likuiditas tipis</option>
-          <option value="gem">Gem hunter — token kecil/baru, upside besar (risiko sangat tinggi)</option>
-        </select>
+  <div class="layout">
+    <aside class="gutter" aria-label="Status run">
+      <p class="telemetry-title">RUN</p>
+      <dl class="telemetry">
+        <div class="tel"><dt>Preset</dt><dd id="tel-preset" class="small">Balanced</dd></div>
+        <div class="tel"><dt>Run terakhir</dt><dd id="tel-run" class="small">belum ada</dd></div>
+        <div class="tel"><dt>Deep scan</dt><dd id="tel-deep" class="small">tidak ada</dd></div>
+        <div class="tel"><dt>Config</dt><dd id="tel-config" class="small">memuat…</dd></div>
+      </dl>
+    </aside>
+
+    <div class="content">
+      <section class="control">
+        <div class="input-row wrap">
+          <div class="field">
+            <label for="preset">Preset risiko</label>
+            <select id="preset">
+              <option value="balanced" selected>Balanced — likuid, pool ≥ 48 jam</option>
+              <option value="conservative">Conservative — likuid, pool ≥ 7 hari, verified</option>
+              <option value="degen">Degen — izinkan pool baru &amp; likuiditas tipis</option>
+              <option value="gem">Gem hunter — token kecil/baru, upside besar (risiko sangat tinggi)</option>
+            </select>
+          </div>
+          <button id="discover-button" type="button">Discover kandidat <span class="glyph" aria-hidden="true">↗</span></button>
+        </div>
+        <p class="hint" id="preset-hint"></p>
+      </section>
+
+      <details id="preset-compare">
+        <summary>Perbandingan ambang antar preset</summary>
+        <div class="table-wrap"><table id="preset-table"><thead><tr><th>Preset</th><th>Likuiditas</th><th>Volume 24j</th><th>Usia pool</th><th>Holder</th><th>Top 10</th><th>Market cap</th><th>FDV/MC</th><th>Turnover</th><th>Keamanan</th></tr></thead><tbody id="preset-rows"></tbody></table></div>
+        <p class="hint">Bobot skor tiap preset juga berbeda, jadi skor yang sama di dua preset tidak mengukur hal yang sama.</p>
+      </details>
+
+      <p id="discover-status" class="status" role="status" aria-live="polite">Belum ada pencarian. Tekan Discover untuk mengambil kandidat.</p>
+
+      <div id="discover-results" hidden>
+        <section class="panel">
+          <div class="section-head"><h3>Ringkasan run</h3><span id="discover-meta" class="section-note"></span></div>
+          <div id="discover-summary" class="metrics"></div>
+          <p id="discover-sources" class="hint"></p>
+          <div id="discover-warnings"></div>
+          <p class="hint">Skor = rata-rata berbobot 6 komponen (keamanan 22, likuiditas 15, momentum 14, struktur 15, organic 9, ruang naik 25) dikurangi penalti. Komponen yang belum dianalisis dikeluarkan dari rata-rata, bukan diberi nilai netral, sehingga skor awal bersifat sementara sampai deep scan selesai. Komponen “ruang naik” memberi bobot besar pada market cap kecil dan harga yang belum extended; token mapan biasanya kalah di sini, dan itu memang tujuannya. Grade A ≥ 75, B ≥ 60, C ≥ 45; keamanan unknown membatasi grade maksimum C. “Dievaluasi” = kandidat yang benar-benar punya data pool DEX Screener; sisanya ditolak karena pool tidak ditemukan. Ambang likuiditas mengikuti preset, jadi skor token yang sama bisa berbeda antar-preset.</p>
+        </section>
+
+        <section class="panel">
+          <div class="section-head"><h3>Kandidat ter-rank</h3><span id="deep-status" class="section-note">deep scan: -</span></div>
+          <p class="hint">Tekan Rincian untuk melihat komponen skor, bukti per metrik, penalti, waktu pengambilan tiap angka, dan rencana entry. Angka tanpa sumber jelas tidak ditampilkan sebagai fakta. Deep scan berjalan di latar untuk semua baris (±13 detik per token karena batas publik GeckoTerminal); baris yang belum selesai bertanda “antri”.</p>
+          <div class="table-wrap">
+            <table class="candidates" id="candidates-table">
+              <thead><tr>
+                <th>#</th><th>Token</th><th>Skor</th><th>Harga</th><th>1j</th><th>24j</th><th>Likuiditas</th><th>Turnover</th><th>MCap</th><th>Top10</th><th>Umur pool</th><th>Setup</th><th class="cell-action"></th>
+              </tr></thead>
+              <tbody id="candidates"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <details class="panel" id="near-miss-panel">
+          <summary>Hampir lolos gate — kandidat berpotensi yang digugurkan <span id="near-miss-count" class="section-note"></span></summary>
+          <p class="hint">Token ini <strong>tidak lolos gate</strong>, tetapi tetap diberi skor penuh supaya bisa dibandingkan. Sering kali yang paling berpotensi justru gugur karena satu ambang (market cap kecil, pool baru, holder sedikit). Baca gate yang gagal sebelum menganggapnya kandidat.</p>
+          <div id="near-miss"></div>
+        </details>
+
+        <details class="panel">
+          <summary>Kandidat yang digugurkan gate <span id="rejected-count" class="section-note"></span></summary>
+          <p class="hint">Setiap penolakan menyebut kode gate dan nilai yang gagal. Tidak ada kandidat yang dihapus diam-diam.</p>
+          <div id="rejected"></div>
+        </details>
       </div>
-      <button id="discover-button" type="button">Discover kandidat <span aria-hidden="true">↗</span></button>
     </div>
-    <p class="hint" id="preset-hint"></p>
-    <p class="hint" id="config-hint">Memuat konfigurasi…</p>
-  </section>
-
-  <p id="discover-status" role="status" aria-live="polite">Belum ada pencarian. Tekan Discover untuk mengambil kandidat.</p>
-
-  <div id="discover-results" hidden>
-    <section class="panel summary-panel">
-      <div class="section-head"><h3>Ringkasan run</h3><span id="discover-meta" class="tag"></span></div>
-      <div id="discover-summary" class="metrics"></div>
-      <div id="discover-warnings"></div>
-      <p class="hint">Skor = rata-rata berbobot 6 komponen (keamanan 22, likuiditas 15, momentum 14, struktur 15, organic 9, ruang naik 25) dikurangi penalti. Komponen yang belum dianalisis dikeluarkan dari rata-rata, bukan diberi nilai netral, sehingga skor awal bersifat sementara sampai deep scan selesai. Komponen “ruang naik” memberi bobot besar pada market cap kecil dan harga yang belum extended; token mapan biasanya kalah di sini, dan itu memang tujuannya. Grade A ≥ 75, B ≥ 60, C ≥ 45; keamanan unknown membatasi grade maksimum C. “Dievaluasi” = kandidat yang benar-benar punya data pool DEX Screener; sisanya ditolak karena pool tidak ditemukan. Ambang likuiditas mengikuti preset, jadi skor token yang sama bisa berbeda antar-preset.</p>
-    </section>
-
-    <section class="panel">
-      <div class="section-head"><h3>Kandidat ter-rank</h3><span id="deep-status" class="tag">deep scan: -</span></div>
-      <p class="hint">Tekan Rincian untuk melihat komponen skor, bukti per metrik, penalti, waktu pengambilan tiap angka, dan rencana entry. Angka tanpa sumber jelas tidak ditampilkan sebagai fakta. Deep scan berjalan di latar untuk semua baris (±13 detik per token karena batas publik GeckoTerminal); baris yang belum selesai bertanda “antri”.</p>
-      <div class="table-wrap">
-        <table id="candidates-table">
-          <thead><tr>
-            <th>#</th><th>Token</th><th>Skor</th><th>Harga</th><th>1j</th><th>24j</th><th>Likuiditas</th><th>Turnover</th><th>MCap</th><th>Top10</th><th>Umur pool</th><th>Setup</th><th></th>
-          </tr></thead>
-          <tbody id="candidates"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <details class="panel" id="near-miss-panel">
-      <summary>Hampir lolos gate — kandidat berpotensi yang digugurkan <span id="near-miss-count" class="section-note"></span></summary>
-      <p class="hint">Token ini <strong>tidak lolos gate</strong>, tetapi tetap diberi skor penuh supaya bisa dibandingkan. Sering kali yang paling berpotensi justru gugur karena satu ambang (market cap kecil, pool baru, holder sedikit). Baca gate yang gagal sebelum menganggapnya kandidat.</p>
-      <div id="near-miss"></div>
-    </details>
-
-    <details class="panel">
-      <summary>Kandidat yang digugurkan gate <span id="rejected-count" class="section-note"></span></summary>
-      <p class="hint">Setiap penolakan menyebut kode gate dan nilai yang gagal. Tidak ada kandidat yang dihapus diam-diam.</p>
-      <div id="rejected"></div>
-    </details>
   </div>
 </section>
 
 <!-- ======================= INSPECT ======================= -->
-<section id="tab-inspect" class="tab-panel" hidden>
-  <section class="intro compact">
-    <p class="eyebrow">LIHAT KONDISINYA. JANGAN ASAL ENTRY.</p>
+<section id="tab-inspect" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-inspect" tabindex="-1" hidden>
+  <div class="band compact">
+    <p class="margin-note">LIHAT KONDISINYA. JANGAN ASAL ENTRY.</p>
     <h1>Satu mint.<br>Tren, volume, alasan watch.</h1>
-    <p class="sub">Snapshot pasar ditambah candle historis 15 menit. Lihat kondisi breakout, posisi harga, dan apa yang belum diketahui. Tanpa wallet, tanpa transaksi.</p>
-  </section>
+    <p class="standfirst">Snapshot pasar ditambah candle historis 15 menit. Lihat kondisi breakout, posisi harga, dan apa yang belum diketahui. Tanpa wallet, tanpa transaksi.</p>
+  </div>
 
-  <section class="panel scan-panel">
-    <form id="scan-form">
-      <label for="mint">Alamat mint Solana</label>
-      <div class="input-row">
-        <input id="mint" name="mint" type="text" placeholder="Tempel alamat mint, bukan alamat pool" autocomplete="off" autocapitalize="off" spellcheck="false" required maxlength="44">
-        <button id="scan-button" type="submit">Scan token <span aria-hidden="true">↗</span></button>
+  <div class="layout">
+    <aside class="gutter" aria-label="Umur data">
+      <p class="telemetry-title">UMUR DATA</p>
+      <dl class="telemetry">
+        <div class="tel"><dt>Snapshot</dt><dd id="tel-snapshot" class="small">belum ada</dd></div>
+        <div class="tel"><dt>Data pasar</dt><dd id="tel-market" class="small">belum ada</dd></div>
+        <div class="tel"><dt>Data keamanan</dt><dd id="tel-safety" class="small">belum ada</dd></div>
+        <div class="tel"><dt>Candle 15m</dt><dd id="tel-candle" class="small">belum ada</dd></div>
+        <div class="tel"><dt>Cache</dt><dd id="tel-cache" class="small">30 dtk scan · 60 dtk candle</dd></div>
+      </dl>
+    </aside>
+
+    <div class="content">
+      <section class="control">
+        <form id="scan-form">
+          <div class="field">
+            <label for="mint">Alamat mint Solana</label>
+            <div class="input-row">
+              <input id="mint" name="mint" type="text" placeholder="Tempel alamat mint, bukan alamat pool" autocomplete="off" autocapitalize="off" spellcheck="false" required maxlength="44">
+              <button id="scan-button" type="submit">Scan token <span class="glyph" aria-hidden="true">↗</span></button>
+            </div>
+          </div>
+          <p class="hint">Hanya alamat yang Anda masukkan yang diperiksa. Format valid tidak membuktikan alamat merupakan akun mint.</p>
+          <button type="button" id="example" class="text-button">Isi contoh: Wrapped SOL</button>
+        </form>
+      </section>
+
+      <p id="status" class="status" role="status" aria-live="polite">Siap memeriksa mint. Belum ada data yang dimuat.</p>
+
+      <div id="results" hidden>
+        <div class="result-head">
+          <div>
+            <p class="margin-note">HASIL PEMERIKSAAN</p>
+            <h2 id="token-name">Token</h2>
+            <p id="token-mint" class="mono"></p>
+          </div>
+          <div class="result-actions">
+            <span id="market-status" class="tag"></span>
+            <p id="timestamp" class="hint"></p>
+            <button id="add-watch" type="button" class="text-button">+ Tambah ke watchlist</button>
+          </div>
+        </div>
+
+        <section class="panel watch-panel">
+          <p class="margin-note">KONTEKS ENTRY · BUKAN PERINTAH BUY</p>
+          <h2 id="watch-title"></h2>
+          <p id="watch-reason"></p>
+          <p id="watch-invalidation" class="hint"></p>
+          <p id="history-freshness" class="hint" role="status"></p>
+          <div id="setup-flags"></div>
+          <div id="entry-cautions"></div>
+          <p id="entry-note" class="hint"></p>
+        </section>
+
+        <section class="panel">
+          <div class="section-head"><h3>Tren &amp; volume · candle 15 menit</h3><span id="history-status" class="section-note"></span></div>
+          <p id="history-source" class="hint"></p>
+          <div id="history-metrics" class="metrics"></div>
+          <div id="history-signals"></div>
+          <details>
+            <summary>Aturan watch dan penutupan terakhir</summary>
+            <p class="hint">Candle yang belum tutup tidak dipakai. Minimum 21 candle tertutup berurutan. Resistance/support = high/low 20 candle sebelumnya (5 jam), bukan level pasti. Breakout watch = close di atas resistance + volume ≥ 1,5× rata-rata 20 candle sebelumnya. Dekat resistance = 0–2% di bawah level. Terlalu jauh = lebih dari 8% di atas SMA20; bukan ajakan mengejar. Heuristik tetap, belum dibacktest, tidak memberi peluang profit atau ukuran posisi. Bukan deteksi retest.</p>
+            <div class="table-wrap"><table><thead><tr><th>Tutup (waktu lokal)</th><th>Close USD</th><th>Volume USD</th></tr></thead><tbody id="candles"></tbody></table></div>
+          </details>
+          <a href="https://api.geckoterminal.com/docs/index.html" target="_blank" rel="noopener noreferrer">Dokumentasi GeckoTerminal <span class="glyph" aria-hidden="true">↗</span></a>
+        </section>
+
+        <section class="panel">
+          <div class="section-head"><h3>Pasar <span class="section-note">DEX Screener</span></h3></div>
+          <div id="metrics" class="metrics"></div>
+          <p id="market-note" class="hint"></p>
+        </section>
+
+        <div class="columns">
+          <section class="panel">
+            <div class="section-head"><h3>Temuan risiko</h3><span id="risk-status" class="section-note">unknown</span></div>
+            <p id="risk-reason"></p>
+            <div id="risk-findings"></div>
+            <p class="hint">unknown = belum diketahui, bukan risiko rendah. Tidak ada label “aman” di scanner ini.</p>
+            <a href="https://docs.gopluslabs.io/reference/solana-token-security" target="_blank" rel="noopener noreferrer">Dokumentasi GoPlus <span class="glyph" aria-hidden="true">↗</span></a>
+          </section>
+          <section class="panel">
+            <div class="section-head"><h3>Alasan sinyal pasar</h3></div>
+            <p class="hint">Aturan lokal yang transparan, bukan skor keamanan atau rekomendasi trading.</p>
+            <div id="signals"></div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="section-head"><h3>Pool yang ditemukan <span id="pool-count" class="section-note"></span></h3></div>
+          <p class="hint">Harga, perubahan, market cap, dan FDV merujuk base token. Jika mint adalah quote, harga mint ditandai unknown. Volume dan likuiditas adalah data pool.</p>
+          <div class="table-wrap"><table><thead><tr><th>Pool / DEX</th><th>Posisi mint</th><th>Harga mint (USD)</th><th>Likuiditas (USD)</th><th>Volume 24j (USD)</th></tr></thead><tbody id="pools"></tbody></table></div>
+        </section>
+
+        <details class="panel">
+          <summary>Provenans &amp; respons scanner</summary>
+          <p class="hint">Snapshot pihak ketiga, bukan feed real-time. Cache scan 30 detik; cache candle lokal dan provider 60 detik. Waktu pengambilan bukan waktu transaksi terakhir. Data harga snapshot tidak dicampur dengan penutupan candle untuk menghitung breakout. Hasil baru membutuhkan scan manual. Tidak ada data contoh yang disamarkan sebagai data nyata.</p>
+          <pre id="raw"></pre>
+        </details>
       </div>
-      <p class="hint">Hanya alamat yang Anda masukkan yang diperiksa. Format valid tidak membuktikan alamat merupakan akun mint.</p>
-      <button type="button" id="example" class="text-button">Isi contoh: Wrapped SOL</button>
-    </form>
-  </section>
-
-  <p id="status" role="status" aria-live="polite">Siap memeriksa mint. Belum ada data yang dimuat.</p>
-
-  <div id="results" hidden>
-    <section class="result-head">
-      <div><p class="eyebrow">HASIL PEMERIKSAAN</p><h2 id="token-name">Token</h2><p id="token-mint" class="mono"></p></div>
-      <div class="result-actions"><span id="market-status" class="tag"></span><p id="timestamp" class="hint"></p><button id="add-watch" type="button" class="text-button">+ Tambah ke watchlist</button></div>
-    </section>
-
-    <section class="panel watch-panel">
-      <p class="eyebrow">KONTEKS ENTRY · BUKAN PERINTAH BUY</p>
-      <h2 id="watch-title"></h2>
-      <p id="watch-reason"></p>
-      <p id="watch-invalidation" class="hint"></p>
-      <p id="history-freshness" role="status" class="hint"></p>
-      <div id="setup-flags"></div>
-      <div id="entry-cautions"></div>
-      <p id="entry-note" class="hint"></p>
-    </section>
-
-    <section class="panel">
-      <div class="section-head"><h3>Tren &amp; volume · candle 15 menit</h3><span id="history-status" class="tag"></span></div>
-      <p id="history-source" class="hint"></p>
-      <div id="history-metrics" class="metrics"></div>
-      <div id="history-signals"></div>
-      <details>
-        <summary>Aturan watch dan penutupan terakhir</summary>
-        <p class="hint">Candle yang belum tutup tidak dipakai. Minimum 21 candle tertutup berurutan. Resistance/support = high/low 20 candle sebelumnya (5 jam), bukan level pasti. Breakout watch = close di atas resistance + volume ≥ 1,5× rata-rata 20 candle sebelumnya. Dekat resistance = 0–2% di bawah level. Terlalu jauh = lebih dari 8% di atas SMA20; bukan ajakan mengejar. Heuristik tetap, belum dibacktest, tidak memberi peluang profit atau ukuran posisi. Bukan deteksi retest.</p>
-        <div class="table-wrap"><table><thead><tr><th>Tutup (waktu lokal)</th><th>Close USD</th><th>Volume USD</th></tr></thead><tbody id="candles"></tbody></table></div>
-      </details>
-      <a href="https://api.geckoterminal.com/docs/index.html" target="_blank" rel="noopener noreferrer">Dokumentasi GeckoTerminal ↗</a>
-    </section>
-
-    <section><h3>Pasar <span class="section-note">DEX Screener</span></h3><div id="metrics" class="metrics"></div><p id="market-note" class="hint"></p></section>
-
-    <div class="columns">
-      <section class="panel">
-        <div class="section-head"><h3>Temuan risiko</h3><span id="risk-status" class="tag">unknown</span></div>
-        <p id="risk-reason"></p>
-        <div id="risk-findings"></div>
-        <p class="hint">unknown = belum diketahui, bukan risiko rendah. Tidak ada label “aman” di scanner ini.</p>
-        <a href="https://docs.gopluslabs.io/reference/solana-token-security" target="_blank" rel="noopener noreferrer">Dokumentasi GoPlus ↗</a>
-      </section>
-      <section class="panel">
-        <h3>Alasan sinyal pasar</h3>
-        <p class="hint">Aturan lokal yang transparan, bukan skor keamanan atau rekomendasi trading.</p>
-        <div id="signals"></div>
-      </section>
     </div>
-
-    <section class="panel">
-      <h3>Pool yang ditemukan <span id="pool-count" class="section-note"></span></h3>
-      <p class="hint">Harga, perubahan, market cap, dan FDV merujuk base token. Jika mint adalah quote, harga mint ditandai unknown. Volume dan likuiditas adalah data pool.</p>
-      <div class="table-wrap"><table><thead><tr><th>Pool / DEX</th><th>Posisi mint</th><th>Harga mint (USD)</th><th>Likuiditas (USD)</th><th>Volume 24j (USD)</th></tr></thead><tbody id="pools"></tbody></table></div>
-    </section>
-
-    <details class="panel">
-      <summary>Provenans &amp; respons scanner</summary>
-      <p class="hint">Snapshot pihak ketiga, bukan feed real-time. Cache scan 30 detik; cache candle lokal dan provider 60 detik. Waktu pengambilan bukan waktu transaksi terakhir. Data harga snapshot tidak dicampur dengan penutupan candle untuk menghitung breakout. Hasil baru membutuhkan scan manual. Tidak ada data contoh yang disamarkan sebagai data nyata.</p>
-      <pre id="raw"></pre>
-    </details>
   </div>
 </section>
 
 <!-- ======================= WATCHLIST ======================= -->
-<section id="tab-watchlist" class="tab-panel" hidden>
-  <section class="intro compact">
-    <p class="eyebrow">DISIMPAN LOKAL · SQLITE</p>
+<section id="tab-watchlist" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-watchlist" tabindex="-1" hidden>
+  <div class="band compact">
+    <p class="margin-note">DISIMPAN LOKAL · SQLITE</p>
     <h1>Watchlist &amp; perubahan.</h1>
-    <p class="sub">Token yang Anda simpan, snapshot terakhir, dan status rencana. Data hanya ada di komputer ini.</p>
-  </section>
-  <p id="watch-status" role="status" aria-live="polite"></p>
-  <section class="panel">
-    <div class="section-head"><h3>Token dipantau</h3><button id="watch-refresh" type="button" class="text-button">Muat ulang</button></div>
-    <div id="watch-items"></div>
-  </section>
-  <section class="panel">
-    <h3>Run discovery terakhir</h3>
-    <div id="watch-runs"></div>
-  </section>
+    <p class="standfirst">Token yang Anda simpan, snapshot terakhir, dan status rencana. Data hanya ada di komputer ini.</p>
+  </div>
+
+  <div class="layout">
+    <aside class="gutter" aria-label="Status penyimpanan">
+      <p class="telemetry-title">TERSIMPAN</p>
+      <dl class="telemetry">
+        <div class="tel"><dt>Token tersimpan</dt><dd id="tel-watch-count">0</dd></div>
+        <div class="tel"><dt>Run terakhir</dt><dd id="tel-watch-run" class="small">belum ada</dd></div>
+        <div class="tel"><dt>Lolos pada run terakhir</dt><dd id="tel-watch-pass" class="small">belum ada</dd></div>
+        <div class="tel"><dt>Penyimpanan</dt><dd id="tel-watch-store" class="small">memuat…</dd></div>
+      </dl>
+    </aside>
+
+    <div class="content">
+      <p id="watch-status" class="status" role="status" aria-live="polite"></p>
+      <section class="panel">
+        <div class="section-head"><h3>Token dipantau</h3><button id="watch-refresh" type="button" class="text-button">Muat ulang</button></div>
+        <div id="watch-items"></div>
+      </section>
+      <section class="panel">
+        <div class="section-head"><h3>Run discovery terakhir</h3></div>
+        <div id="watch-runs"></div>
+      </section>
+    </div>
+  </div>
 </section>
 
-<footer>
+</main>
+
+<footer class="foot">
   <p>Bukan rekomendasi beli/jual. Tidak ada hasil yang menjamin token aman. Data pihak ketiga bisa terlambat, keliru, atau tidak lengkap.</p>
   <p>Tanpa wallet · Tanpa private key · Tanpa eksekusi trade · Tanpa database akun</p>
-  <a href="https://docs.dexscreener.com/api/reference" target="_blank" rel="noopener noreferrer">Referensi API DEX Screener ↗</a>
+  <a href="https://docs.dexscreener.com/api/reference" target="_blank" rel="noopener noreferrer">Referensi API DEX Screener <span class="glyph" aria-hidden="true">↗</span></a>
 </footer>
-</main></body></html>
+</body></html>

@@ -25,15 +25,23 @@ class Element {
   remove() { this.parent.children.splice(this.parent.children.indexOf(this), 1); }
 }
 const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-function harness(fetcher = async () => ({ ok: true, json: async () => ({}) })) {
+function harness(fetcher = async () => ({ ok: true, json: async () => ({}) }), config = { storage: { available: true } }) {
   const elements = new Map();
-  const get = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
+  const get = id => {
+    if (!elements.has(id)) {
+      const el = new Element();
+      // Select preset selalu punya nilai di HTML; fake DOM harus menirukan.
+      if (id === 'preset') el.value = 'balanced';
+      elements.set(id, el);
+    }
+    return elements.get(id);
+  };
   const timers = new Map(); let timerId = 0;
   const clipboardWrites = [];
   const context = vm.createContext({
     document: { getElementById: get, createElement: tag => new Element(tag), querySelectorAll: () => [] },
     navigator: { clipboard: { async writeText(value) { clipboardWrites.push(value); } } },
-    fetch: (url, options) => url === '/api/config' ? Promise.resolve({ ok: true, json: async () => ({ storage: { available: true } }) }) : fetcher(url, options),
+    fetch: (url, options) => url === '/api/config' ? Promise.resolve({ ok: true, json: async () => config }) : fetcher(url, options),
     AbortSignal, Intl, Date, console,
     setTimeout: callback => { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout: id => timers.delete(id), setInterval: () => 0, clearInterval() {}
@@ -236,3 +244,118 @@ test('UI menandai baris yang belum dianalisis sebagai antri dan menampilkan alas
   const detail = allElements(table).find(item => item.className === 'detail-row');
   assert.match(detail.textContent, /HTTP 429/);
 });
+
+test('UI gauge skor membedakan skor terukur penuh dari skor yang bobotnya belum terukur', () => {
+  const h = harness();
+  const candidate = {
+    mint: 'mint-one', symbol: 'EX', rank: 1, score: 70, grade: 'B', confidence: 0.5,
+    market: { priceUsd: 1, change: {}, liquidityUsd: 200000, turnover: 1, marketCap: 2000000, ageHours: 72 },
+    safety: { top10Pct: 10 }, components: [], penalties: [], entryPlan: null
+  };
+  h.context.fixture = { rows: [candidate] };
+  h.run('discoverData = fixture; renderCandidates(discoverData)');
+  const table = h.get('candidates');
+  const parts = allElements(table);
+  const solid = parts.find(item => item.className === 'gauge-solid');
+  const band = parts.find(item => item.className === 'gauge-band');
+  const mark = parts.find(item => item.className === 'gauge-mark');
+  // Bobot terukur 50%: bagian yang pasti hanya 70 x 0,5 = 35, sisa 50 poin
+  // masih bisa bertambah dari komponen yang belum dianalisis.
+  assert.equal(solid.style.width, '35%');
+  assert.equal(band.style.left, '35%');
+  assert.equal(band.style.width, '50%');
+  assert.equal(mark.style.left, '70%');
+  // Tick grade hanya di gauge besar: di kolom tabel hanya jadi noise.
+  assert.equal(parts.filter(item => item.className === 'gauge-tick').length, 0);
+  const gauge = parts.find(item => item.className.startsWith('gauge ') && item.className.includes('grade-b'));
+  assert.ok(gauge, 'gauge harus memakai warna grade');
+  assert.match(gauge.title, /Bobot terukur 50%/);
+  assert.match(gauge.title, /rentang mungkin 35–85/);
+
+  // Gauge besar di rincian: tick grade C >= 45, B >= 60, A >= 75.
+  const detailButton = allElements(table).find(item => item.tagName === 'button' && item.textContent === 'Rincian');
+  detailButton.listeners.click({ stopPropagation() {} });
+  const detail = allElements(table).find(item => item.className === 'detail-row');
+  const bigTicks = allElements(detail).filter(item => item.className === 'gauge-tick');
+  assert.deepEqual(bigTicks.map(tick => tick.style.left), ['45%', '60%', '75%']);
+  // Label skala harus duduk persis di tick-nya.
+  const scale = allElements(detail).find(item => item.className === 'gauge-scale');
+  const labels = allElements(scale).filter(item => item.tagName === 'span');
+  assert.deepEqual(labels.map(label => label.style.left), ['0%', '45%', '60%', '75%', '100%']);
+});
+
+test('UI gauge tanpa confidence tidak menganggap bobot terukur penuh', () => {
+  const h = harness();
+  const candidate = {
+    mint: 'mint-one', symbol: 'EX', rank: 1, score: 70, grade: 'B',
+    market: { priceUsd: 1, change: {}, liquidityUsd: 200000, turnover: 1, marketCap: 2000000, ageHours: 72 },
+    safety: { top10Pct: 10 }, components: [], penalties: [], entryPlan: null
+  };
+  h.context.fixture = { rows: [candidate] };
+  h.run('discoverData = fixture; renderCandidates(discoverData)');
+  const parts = allElements(h.get('candidates'));
+  assert.equal(parts.find(item => item.className === 'gauge-band'), undefined, 'tanpa confidence tidak boleh ada pita terukur');
+  const solid = parts.find(item => item.className === 'gauge-solid');
+  assert.equal(solid.style.width, '70%');
+});
+
+test('UI telemetry di gutter run diperbarui setelah discovery', async () => {
+  const h = harness(async () => ({ ok: true, json: async () => ({
+    rows: [], rejected: [], nearMissRows: [],
+    universe: { total: 412, checked: 96, evaluated: 96, accepted: 12, rejected: 84, sources: {} },
+    preset: { label: 'Balanced' }, configHash: 'abc123', warnings: [], jobId: 'job-9', jobTotal: 15, finishedAt: new Date().toISOString()
+  }) }), { storage: { available: true }, configHash: 'abc123', presets: { balanced: { label: 'Balanced' } } });
+  await h.get('discover-button').listeners.click();
+  assert.match(h.get('tel-deep').textContent, /0\/15/);
+  assert.ok(h.get('tel-run').textContent.length > 0);
+  assert.match(h.get('tel-preset').textContent, /Balanced/);
+});
+
+test('UI membandingkan ambang antar preset dari konfigurasi server', async () => {
+  const config = {
+    storage: { available: true }, configHash: 'abc123',
+    entry: { notionalUsd: 500, maxSlippagePct: 2, minRiskReward: 1.5 },
+    presets: {
+      balanced: { label: 'Balanced', thresholds: { minLiquidityUsd: 150000, minVolume24hUsd: 50000, minPoolAgeHours: 48, minHolderCount: 1500, maxTop10Pct: 30, minMarketCapUsd: 1000000, maxMarketCapUsd: null, maxFdvToMcap: 1.5, maxTurnover: 10, requireVerified: false, allowUnknownSafety: true }, weights: { safety: 22 } },
+      gem: { label: 'Gem hunter', thresholds: { minLiquidityUsd: 50000, minVolume24hUsd: 15000, minPoolAgeHours: 1, minHolderCount: 100, maxTop10Pct: 45, minMarketCapUsd: 50000, maxMarketCapUsd: 5000000, maxFdvToMcap: 5, maxTurnover: 80, requireVerified: false, allowUnknownSafety: true }, weights: { safety: 12 } }
+    }
+  };
+  const h = harness(async () => ({ ok: true, json: async () => ({}) }), config);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const rows = h.get('preset-rows').children;
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].textContent, /Balanced/);
+  assert.match(rows[0].textContent, /\$150,000/);
+  assert.match(rows[1].textContent, /Gem hunter/);
+  assert.match(rows[1].textContent, /\$50,000/);
+});
+
+test('UI tidak melompat-lompat urutan baris selama deep scan, lalu meranking ulang setelah job selesai', async () => {
+  const responses = [];
+  const h = harness(async () => { const payload = responses.shift(); return { ok: true, json: async () => payload }; });
+  h.context.fixture = { rows: [row('mint-a', 60), row('mint-b', 50)] };
+  h.run('discoverData = fixture; pollJob("job-2", 2)');
+  responses.push({ status: 'running', completed: 1, failures: 0, results: [{ ok: true, mint: 'mint-b', result: { ...row('mint-b', 99) } }] });
+  await h.tick();
+  // Skor mint-b naik jadi 99, tapi urutan tidak boleh melompat saat run masih jalan.
+  assert.deepEqual(Array.from(h.run('discoverData.rows.map(r => r.mint)')), ['mint-a', 'mint-b']);
+  responses.push({ status: 'done', completed: 2, failures: 0, results: [] });
+  await h.tick();
+  // Job selesai: ranking penuh dihitung ulang satu kali.
+  assert.deepEqual(Array.from(h.run('discoverData.rows.map(r => r.mint)')), ['mint-b', 'mint-a']);
+});
+
+test('UI memakai semantik tablist yang benar dan label kolom konsisten dengan header', () => {
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /role="tablist"/);
+  assert.match(html, /role="tab" aria-selected="true" aria-controls="tab-discover"/);
+  assert.match(html, /role="tabpanel" aria-labelledby="tabbtn-discover"/);
+  // Header tabel kandidat dan label data-label harus berjumlah sama.
+  const header = html.match(/<table class="candidates" id="candidates-table">[\s\S]*?<thead><tr>([\s\S]*?)<\/tr>/);
+  assert.ok(header, 'header tabel kandidat harus ada');
+  const columns = (header[1].match(/<th\b/g) || []).length;
+  assert.equal(columns, 13);
+  const h2 = harness();
+  assert.equal(h2.run('CANDIDATE_COLS.length'), columns);
+});
+

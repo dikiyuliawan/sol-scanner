@@ -25,6 +25,22 @@ test('seluruh endpoint selain CRUD Watchlist menolak metode non-GET dengan 405',
   }
 });
 
+test('server menyajikan font dari origin sendiri, tanpa request ke pihak ketiga', async t => {
+  const base = await localServer(t);
+  const response = await fetch(`${base}/fonts/archivo-latin.woff2`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'font/woff2');
+  assert.match(response.headers.get('cache-control') ?? '', /immutable/);
+  const body = Buffer.from(await response.arrayBuffer());
+  assert.equal(body.subarray(0, 4).toString('latin1'), 'wOF2', 'isi harus woff2 asli, bukan teks');
+  // Font yang tidak ada dan path yang mencoba keluar dari folder font.
+  assert.equal((await fetch(`${base}/fonts/tidak-ada.woff2`)).status, 404);
+  assert.equal((await fetch(`${base}/fonts/..%2Findex.html`)).status, 404);
+  // Metode selain GET tetap ditolak, seperti endpoint lain.
+  const posted = await fetch(`${base}/fonts/archivo-latin.woff2`, { method: 'POST' });
+  assert.equal(posted.status, 405);
+});
+
 test('server menolak Host asing untuk mencegah pembacaan data lokal lewat DNS rebinding', async t => {
   const base = await localServer(t);
   for (const host of ['attacker.example', '127.0.0.1.attacker.example', 'localhost.attacker.example']) {
